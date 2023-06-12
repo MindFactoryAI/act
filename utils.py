@@ -3,9 +3,11 @@ import torch
 import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
-
+from pathlib import Path
 import IPython
 e = IPython.embed
+from torch.utils.data.distributed import DistributedSampler
+
 
 class EpisodicDataset(torch.utils.data.Dataset):
     def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
@@ -79,8 +81,8 @@ class EpisodicDataset(torch.utils.data.Dataset):
 def get_norm_stats(dataset_dir, num_episodes):
     all_qpos_data = []
     all_action_data = []
-    for episode_idx in range(num_episodes):
-        dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
+    for episode in Path(dataset_dir).glob('*.hdf5'):
+        dataset_path = str(episode)
         with h5py.File(dataset_path, 'r') as root:
             qpos = root['/observations/qpos'][()]
             qvel = root['/observations/qvel'][()]
@@ -122,8 +124,8 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
     val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=False, sampler=DistributedSampler(train_dataset), pin_memory=True, num_workers=1, prefetch_factor=1)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False, sampler=DistributedSampler(val_dataset), pin_memory=True, num_workers=1, prefetch_factor=1)
 
     return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
 
@@ -178,10 +180,14 @@ def compute_dict_mean(epoch_dicts):
         result[k] = value_sum / num_items
     return result
 
-def detach_dict(d):
+def detach_dict(d, cpu=False):
     new_d = dict()
     for k, v in d.items():
-        new_d[k] = v.detach()
+        if cpu:
+            new_d[k] = v.detach().cpu()
+        else:
+            new_d[k] = v.detach()
+
     return new_d
 
 def set_seed(seed):
