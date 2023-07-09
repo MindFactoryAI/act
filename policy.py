@@ -68,7 +68,16 @@ class CNNMLPPolicy(nn.Module):
     def configure_optimizers(self):
         return self.optimizer
 
+
 def kl_divergence(mu, logvar):
+    """
+    computes the kl divergence P(mu, logvar) || N(0, 1)
+    Where P is a normal distribution parameteized by
+    mu -> mean
+    logvar -> log(sigma ** 2)
+    and N(0, 1) is the standard normal distribution, mu = 0 and sigma = 1
+    """
+
     batch_size = mu.size(0)
     assert batch_size != 0
     if mu.data.ndimension() == 4:
