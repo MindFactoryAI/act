@@ -15,7 +15,8 @@ def compress_image(image, quality=90):
     output_stream = io.BytesIO()
 
     # Compress the image to JPEG and save it to the byte stream
-    image.save(output_stream, format='JPEG', quality=quality)
+    # image.save(output_stream, format='JPEG', quality=quality)
+    image.save(output_stream, format='PNG', compress_level=1)
 
     # Get the byte string from the byte stream
     compressed_data = output_stream.getvalue()
@@ -30,7 +31,7 @@ if __name__ == '__main__':
 
     parser = ArgumentParser()
     parser.add_argument('task_name', help='task_name from aloha.constants')
-    parser.add_argument('cache_dir', help='/home/<user>/.cache')
+    parser.add_argument('cache_dir', help='/home/<user>/data')
     args = parser.parse_args()
 
     dataset_dir = Path(TASK_CONFIGS[args.task_name]['dataset_dir'])
@@ -59,8 +60,10 @@ if __name__ == '__main__':
     for file in pbar:
         pbar.set_description(f'processing: {file}')
         with h5py.File(file, 'r') as root:
-
             cache_dataset = f'{target_dir}/{file.stem}.hdf5'
+            if Path(cache_dataset).exists():
+                continue
+
             with h5py.File(cache_dataset, 'w') as dest_file:
                 observations = dest_file.create_group('observations')
                 images = observations.create_group('images')
@@ -68,6 +71,7 @@ if __name__ == '__main__':
                 root.copy('/observations/qpos', dest_file['/observations'])
                 root.copy('/observations/qvel', dest_file['/observations'])
                 dest_file.attrs['episode_len'] = TASK_CONFIGS[args.task_name]['episode_len']
+                dest_file.attrs['is_sim'] = False
 
                 for cam in cam_names:
                     cam_g = images.create_group(cam)
