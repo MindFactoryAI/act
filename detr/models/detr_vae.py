@@ -75,67 +75,112 @@ class DETRVAE(nn.Module):
         self.latent_out_proj = nn.Linear(self.latent_dim, hidden_dim) # project latent sample to embedding
         self.additional_pos_embed = nn.Embedding(2, hidden_dim) # learned position embedding for proprio and latent
 
+    def style_encoder(self, actions, qpos, batch_size, is_pad):
+        # project action sequence to embedding dim, and concat with a CLS token
+        action_embed = self.encoder_action_proj(actions)  # (bs, seq, hidden_dim)
+        qpos_embed = self.encoder_action_proj(qpos)  # (bs, hidden_dim)
+        qpos_embed = torch.unsqueeze(qpos_embed, axis=1)  # (bs, 1, hidden_dim)
+        cls_embed = self.cls_embed.weight  # (1, hidden_dim)
+        cls_embed = torch.unsqueeze(cls_embed, axis=0).repeat(batch_size, 1, 1)  # (bs, 1, hidden_dim)
+        encoder_input = torch.cat([cls_embed, qpos_embed, action_embed], axis=1)  # (bs, seq+1, hidden_dim)
+        encoder_input = encoder_input.permute(1, 0, 2)  # (seq+1, bs, hidden_dim)
+        # do not mask cls token
+        cls_joint_is_pad = torch.full((batch_size, 2), False).to(qpos.device)  # False: not a padding
+        is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)  # (bs, seq+1)
+        # obtain position embedding
+        pos_embed = self.pos_table.clone().detach()
+        pos_embed = pos_embed.permute(1, 0, 2)  # (seq+1, 1, hidden_dim)
+        # query model
+        encoder_output = self.encoder(encoder_input, pos=pos_embed, src_key_padding_mask=is_pad)
+        encoder_output = encoder_output[0]  # take cls output only
+        latent_info = self.latent_proj(encoder_output)
+        mu = latent_info[:, :self.latent_dim]
+        logvar = latent_info[:, self.latent_dim:]
+        return mu, logvar
+
+    def image_tokens(self, image):
+        # Image observation features and position embeddings
+        all_cam_features = []
+        all_cam_pos = []
+        for cam_id, cam_name in enumerate(self.camera_names):
+            features, pos = self.backbones[0](image[:, cam_id])  # HARDCODED
+            features = features[0]  # take the last layer feature
+            pos = pos[0]
+            all_cam_features.append(self.input_proj(features))
+            all_cam_pos.append(pos)
+        src = torch.cat(all_cam_features, axis=3)
+        pos = torch.cat(all_cam_pos, axis=3)
+        return src, pos
+
     def forward(self, qpos, image, env_state, actions=None, is_pad=None):
         """
         qpos: batch, qpos_dim
         image: batch, num_cam, channel, height, width
         env_state: None
         actions: batch, seq, action_dim
+
+
+                 ┌─────────┐                                 ┌──────────────────┐
+        action ─►│ style   ├─► mu, logvar ~ latent_sample ─► │latent_out_project├─► latent_input
+                 │ encoder │                                 └──────────────────┘
+        qpos  ──►│         │
+                 └─────────┘
+
+                   ┌────────────┐
+        image[] ─► │image_tokens├─► image_input, image_pos_embedd
+                   └────────────┘
+
+                   ┌──────────────────────┐
+        qpos    ─► │input_proj_robot_state├─► proprio_input
+                   └──────────────────────┘
+
+                           ┌───────────┐                        ┌───────────┐
+        image_input     ─► │           ├──► hidden_state[0]─┬─► │action_head├─► a_hat
+                           │           │                    │   └───────────┘
+        image_pos_embed ─► │           │                    │
+                           │transformer│                    │   ┌───────────┐
+        proprio_input   ─► │           │                    └─► │is_pad_head├─► is_pad_hat
+                           │           │                        └───────────┘
+        latent_input    ─► │           │
+                           └───────────┘
+
         """
         is_training = actions is not None # train or val
-        bs, _ = qpos.shape
-        ### Obtain latent z from action sequence
+        batch_size, _ = qpos.shape
+
         if is_training:
-            # project action sequence to embedding dim, and concat with a CLS token
-            action_embed = self.encoder_action_proj(actions) # (bs, seq, hidden_dim)
-            qpos_embed = self.encoder_action_proj(qpos)  # (bs, hidden_dim)
-            qpos_embed = torch.unsqueeze(qpos_embed, axis=1)  # (bs, 1, hidden_dim)
-            cls_embed = self.cls_embed.weight # (1, hidden_dim)
-            cls_embed = torch.unsqueeze(cls_embed, axis=0).repeat(bs, 1, 1) # (bs, 1, hidden_dim)
-            encoder_input = torch.cat([cls_embed, qpos_embed, action_embed], axis=1) # (bs, seq+1, hidden_dim)
-            encoder_input = encoder_input.permute(1, 0, 2) # (seq+1, bs, hidden_dim)
-            # do not mask cls token
-            cls_joint_is_pad = torch.full((bs, 2), False).to(qpos.device) # False: not a padding
-            is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)  # (bs, seq+1)
-            # obtain position embedding
-            pos_embed = self.pos_table.clone().detach()
-            pos_embed = pos_embed.permute(1, 0, 2)  # (seq+1, 1, hidden_dim)
-            # query model
-            encoder_output = self.encoder(encoder_input, pos=pos_embed, src_key_padding_mask=is_pad)
-            encoder_output = encoder_output[0] # take cls output only
-            latent_info = self.latent_proj(encoder_output)
-            mu = latent_info[:, :self.latent_dim]
-            logvar = latent_info[:, self.latent_dim:]
+            # Obtain latent z from action sequence
+            mu, logvar = self.style_encoder(actions, qpos, batch_size, is_pad)
             latent_sample = reparametrize(mu, logvar)
             latent_input = self.latent_out_proj(latent_sample)
         else:
+            # during inference just use mu = 0
             mu = logvar = None
-            latent_sample = torch.zeros([bs, self.latent_dim], dtype=torch.float32).to(qpos.device)
+            latent_sample = torch.zeros([batch_size, self.latent_dim], dtype=torch.float32).to(qpos.device)
             latent_input = self.latent_out_proj(latent_sample)
 
         if self.backbones is not None:
-            # Image observation features and position embeddings
-            all_cam_features = []
-            all_cam_pos = []
-            for cam_id, cam_name in enumerate(self.camera_names):
-                features, pos = self.backbones[0](image[:, cam_id]) # HARDCODED
-                features = features[0] # take the last layer feature
-                pos = pos[0]
-                all_cam_features.append(self.input_proj(features))
-                all_cam_pos.append(pos)
+            # image features and positional embeddings
+            image_input, image_pos_embedd = self.image_tokens(image)
+
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos)
+
             # fold camera dimension into width dimension
-            src = torch.cat(all_cam_features, axis=3)
-            pos = torch.cat(all_cam_pos, axis=3)
-            hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
+            hidden_state = self.transformer(image_input, None, self.query_embed.weight, image_pos_embedd, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
+
         else:
+            # if no backbone we assume the environment state variable is provided
+            # this could be the case if we used a frozen pretrained representation network, like BYOL or DINO
+
             qpos = self.input_proj_robot_state(qpos)
             env_state = self.input_proj_env_state(env_state)
             transformer_input = torch.cat([qpos, env_state], axis=1) # seq length = 2
-            hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
-        a_hat = self.action_head(hs)
-        is_pad_hat = self.is_pad_head(hs)
+            hidden_state = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
+
+        a_hat = self.action_head(hidden_state)
+        is_pad_hat = self.is_pad_head(hidden_state)
+
         return a_hat, is_pad_hat, [mu, logvar]
 
 
