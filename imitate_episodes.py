@@ -7,6 +7,15 @@ import matplotlib.pyplot as plt
 from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
+import sys
+import tty
+import termios
+import shutil
+from pathlib import Path
+import json
+
+import constants
+import wandb
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
@@ -16,10 +25,164 @@ from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 
+
 from sim_env import BOX_POSE
 
+
 import IPython
+import time
+
 e = IPython.embed
+
+
+def best_checkpoint(checkpoint_dir, n=0):
+    """
+    checkpoint dir: directory to find checkpoints
+    n: 0 returns best, 1, returns 2nd best, etc
+    """
+    checkpoints = list_checkpoints(checkpoint_dir)
+    if len(checkpoints) > 0:
+        return str(checkpoints[n])
+
+    policy_best = Path(checkpoint_dir)/Path('policy_best.ckpt')
+    if policy_best.exists():
+        return str(policy_best)
+
+    return None
+
+
+def find_checkpoint(ckpt_dir):
+    checkpoints = list(Path(ckpt_dir).glob('*.ckpt'))
+    for ckpt in checkpoints:
+        if ckpt.name == 'policy_last.ckpt':
+            return str(ckpt)
+
+    policy_best = best_checkpoint(ckpt_dir, 0)
+    if policy_best is not None:
+        return policy_best
+
+    else:
+        print(f"No checkpoints found in {ckpt_dir}")
+        exit(1)
+
+
+def list_checkpoints(checkpoint_dir):
+    return sorted(list(Path(checkpoint_dir).glob('*.ckpt')))
+
+
+def save_best_checkpoints(checkpoint_dir, val_loss, min_val_loss, policy, optimizer, epoch_train_loss, epoch, top_n_checkpoints=5):
+    """
+    checkpoint_dir: the directory to save checkpoints
+    val_loss: the val loss
+    min_val_loss: the minimum val_loss reached so far
+    policy: the model
+    optimizer: the optimizer
+    epoch_train_loss: the training loss reached
+    top_n_checkpoints: keep the best n checkpoints
+    """
+
+    if val_loss < min_val_loss:
+        # Update the best validation loss
+        min_val_loss = val_loss
+
+        # Remove any existing checkpoints if there are more than n
+        checkpoints = list_checkpoints(checkpoint_dir)
+        if len(checkpoints) >= top_n_checkpoints:
+            lowest_val_checkpoint = checkpoints[-1]
+            if not Path(str(lowest_val_checkpoint) + '.data').exists():
+                os.remove(os.path.join(checkpoints[-1]))
+
+        # Save the new checkpoint
+        torch.save({
+            "epoch": epoch,
+            "train_loss": epoch_train_loss,
+            "val_loss": min_val_loss,
+            "model_state_dict": policy.state_dict(),
+            "opt_state_dict": optimizer.state_dict()
+        },
+            f'{checkpoint_dir}/policy_best_{val_loss:.5f}.ckpt')
+
+    return min_val_loss
+
+
+class CheckPointInfo(object):
+    def __init__(self, ckpt_path, values):
+        self.ckpt_path = ckpt_path
+        self.values = values
+
+    @property
+    def epoch(self):
+        if 'epoch' in self.values:
+            return self.values['epoch']
+        else:
+            return 0
+
+    @property
+    def val_loss(self):
+        return self.values['val_loss']
+
+    @property
+    def train_loss(self):
+        return self.values['train_loss']
+
+    @property
+    def sidecar(self):
+        return Path(f'{str(Path(self.ckpt_path))}.data')
+
+    @staticmethod
+    def load(ckpt_path):
+        checkpoint = Path(ckpt_path)
+        if not checkpoint.exists():
+            raise Exception(f'File {checkpoint} not found')
+
+        sidecar = Path(f'{str(Path(ckpt_path))}.data')
+
+        if not sidecar.exists():
+            values = {
+                'trials': [],
+            }
+            with open(sidecar, 'w') as file:
+                json.dump(values, file)
+        else:
+            with open(sidecar, 'r') as file:
+                values = json.load(file)
+
+        ckpt_info = CheckPointInfo(ckpt_path, values)
+
+        if 'val_loss' not in ckpt_info.values:
+            try:
+                checkpoint = torch.load(ckpt_path)
+                for key in ['val_loss', 'train_loss', 'epoch']:
+                    if key in checkpoint:
+                        if isinstance(checkpoint[key], torch.Tensor):
+                            value = checkpoint[key].item()
+                        else:
+                            value = str(checkpoint[key])
+                        ckpt_info.values[key] = value
+                    else:  # its the old format, so kludge it and move on
+                        ckpt_info.values['val_loss'] = 10.
+                ckpt_info.update()
+            except RuntimeError:
+                print(f'{ckpt_path} could not be loaded - the file is probably corrupt, delete it')
+
+        return ckpt_info
+
+    def update(self):
+        with open(self.sidecar, 'w') as file:
+            json.dump(self.values, file)
+
+    @property
+    def trials_n(self):
+        return len(self.values['trials'])
+
+    @property
+    def successes(self):
+        return sum(self.values['trials'])
+
+    @property
+    def success_rate(self):
+        return self.successes / self.trials_n
+
 
 def main(args):
     set_seed(1)
@@ -45,6 +208,7 @@ def main(args):
     num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
+    run_dir = None
 
     # fixed parameters
     state_dim = 14
@@ -85,37 +249,65 @@ def main(args):
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim
+        'real_robot': not is_sim,
+        'resume': args['resume']
     }
 
     if is_eval:
-        ckpt_names = [f'policy_best.ckpt']
+        def select_run(ckpt_dir):
+            run_dirs = [d for d in Path(ckpt_dir).iterdir() if d.is_dir()]
+            for i, run in enumerate(run_dirs):
+                print(f'{i} {run}')
+            while True:
+                selection = int(input('Enter a run: '))
+                if selection < len(run_dirs):
+                    return f'{run_dirs[selection]}'
+
+        def select_checkpoint(run_dir):
+            print(run_dir)
+            checkpoints = list_checkpoints(run_dir)
+            for i, checkpoint in enumerate(checkpoints):
+                checkpoint_info = CheckPointInfo.load(checkpoint)
+                print(f'{i}. {checkpoint} {checkpoint_info.epoch} {checkpoint_info.successes}/{checkpoint_info.trials_n}')
+            while True:
+                selection = int(input('Enter a checkpoint id: '))
+                if selection < len(checkpoints):
+                    return checkpoints[selection]
+
+        def num_rollouts():
+            while True:
+                txt = input('Number of rollouts (Enter for default 5): ')
+                if txt == '':
+                    return 5
+                else:
+                    try:
+                        return int(txt)
+                    except ValueError:
+                        continue
+
+        run_dir = select_run(ckpt_dir)
+        ckpt = select_checkpoint(run_dir)
+        num_rollouts = num_rollouts()
+
         results = []
-        for ckpt_name in ckpt_names:
-            success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
-            results.append([ckpt_name, success_rate, avg_return])
+
+        success_rate, avg_return = eval_bc(config, run_dir, ckpt, num_rollouts, save_episode=False)
+        results.append([args['ckpt_path'], success_rate, avg_return])
 
         for ckpt_name, success_rate, avg_return in results:
             print(f'{ckpt_name}: {success_rate=} {avg_return=}')
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, args['samples_per_epoch'])
 
     # save dataset stats
-    if not os.path.isdir(ckpt_dir):
-        os.makedirs(ckpt_dir)
+    Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
     stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
-    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-
-    # save best checkpoint
-    ckpt_path = os.path.join(ckpt_dir, f'policy_best.ckpt')
-    torch.save(best_state_dict, ckpt_path)
-    print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
+    train_bc(train_dataloader, val_dataloader, config)
 
 
 def make_policy(policy_class, policy_config):
@@ -148,7 +340,21 @@ def get_image(ts, camera_names):
     return curr_image
 
 
-def eval_bc(config, ckpt_name, save_episode=True):
+def getch():
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        char = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return char
+
+
+def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
+
+    print(f'evaluating {ckpt_path}')
+
     set_seed(1000)
     ckpt_dir = config['ckpt_dir']
     state_dim = config['state_dim']
@@ -163,14 +369,14 @@ def eval_bc(config, ckpt_name, save_episode=True):
     onscreen_cam = 'angle'
 
     # load policy and stats
-    ckpt_path = os.path.join(ckpt_dir, ckpt_name)
     policy = make_policy(policy_class, policy_config)
-    loading_status = policy.load_state_dict(torch.load(ckpt_path))
+    checkpoint = torch.load(ckpt_path)
+    loading_status = policy.load_state_dict(checkpoint['model_state_dict'])
     print(loading_status)
     policy.cuda()
     policy.eval()
-    print(f'Loaded: {ckpt_path}')
-    stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+    print(f"Loaded: {ckpt_path} val_loss: {checkpoint['val_loss']}")
+    stats_path = os.path.join(run_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
 
@@ -179,10 +385,11 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
     # load environment
     if real_robot:
-        from aloha_scripts.robot_utils import move_grippers # requires aloha
-        from aloha_scripts.real_env import make_real_env # requires aloha
-        env = make_real_env(init_node=True)
-        env_max_reward = 0
+        from aloha_scripts.robot_utils import move_grippers, reboot_grippers # requires aloha
+        from aloha_scripts.real_env import make_real_env  # requires aloha
+
+        env = make_real_env(init_node=True, task=task_name)
+        env_max_reward = 1.0
     else:
         from sim_env import make_sim_env
         env = make_sim_env(task_name)
@@ -190,15 +397,17 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
     query_frequency = policy_config['num_queries']
     if temporal_agg:
-        query_frequency = 1
+        query_frequency = 20
         num_queries = policy_config['num_queries']
 
     max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
 
-    num_rollouts = 50
     episode_returns = []
     highest_rewards = []
+    checkpoint_info = CheckPointInfo.load(ckpt_path)
+
     for rollout_id in range(num_rollouts):
+
         rollout_id += 0
         ### set task
         if 'sim_transfer_cube' in task_name:
@@ -207,6 +416,11 @@ def eval_bc(config, ckpt_name, save_episode=True):
             BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
 
         ts = env.reset()
+
+        print("press any key to continue, q to quit")
+        char = getch()
+        if char == 'q':
+            exit()
 
         ### onscreen render
         if onscreen_render:
@@ -223,6 +437,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         qpos_list = []
         target_qpos_list = []
         rewards = []
+
         with torch.inference_mode():
             for t in range(max_timesteps):
                 ### update onscreen render and wait for DT
@@ -269,6 +484,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 action = post_process(raw_action)
                 target_qpos = action
 
+
                 ### step the environment
                 ts = env.step(target_qpos)
 
@@ -277,10 +493,26 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 target_qpos_list.append(target_qpos)
                 rewards.append(ts.reward)
 
+
             plt.close()
+
         if real_robot:
             move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
             pass
+
+        print("Space for PASS, any key for FAIL, q for exit")
+        char = getch()
+        if char == 'q':
+            exit()
+        if char == ' ':
+            print("PASS")
+            rewards.append(1.0)
+            checkpoint_info.values['trials'].append(1)
+        else:
+            print("FAIL")
+            rewards.append(0.0)
+            checkpoint_info.values['trials'].append(0)
+        checkpoint_info.update()
 
         rewards = np.array(rewards)
         episode_return = np.sum(rewards[rewards!=None])
@@ -292,18 +524,27 @@ def eval_bc(config, ckpt_name, save_episode=True):
         if save_episode:
             save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
 
+    if real_robot:
+        from aloha_scripts.robot_utils import move_grippers, reboot_grippers # requires aloha
+        from aloha_scripts.real_env import make_real_env  # requires aloha
+        reboot_grippers(env.puppet_bot_left, env.puppet_bot_right)
+        move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
+        pass
+
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
-    summary_str = f'\nSuccess rate: {success_rate}\nAverage return: {avg_return}\n\n'
-    for r in range(env_max_reward+1):
-        more_or_equal_r = (np.array(highest_rewards) >= r).sum()
-        more_or_equal_r_rate = more_or_equal_r / num_rollouts
-        summary_str += f'Reward >= {r}: {more_or_equal_r}/{num_rollouts} = {more_or_equal_r_rate*100}%\n'
+    summary_str = f'\nSuccess rate: {success_rate} Average return: {avg_return} of {len(highest_rewards)} trials\n'
+
+    print(f'{checkpoint_info.ckpt_path} : {checkpoint_info.success_rate} {checkpoint_info.successes}/{checkpoint_info.trials_n}')
+    # for r in range(env_max_reward+1):
+    #     more_or_equal_r = (np.array(highest_rewards) >= r).sum()
+    #     more_or_equal_r_rate = more_or_equal_r / num_rollouts
+    #     summary_str += f'Reward >= {r}: {more_or_equal_r}/{num_rollouts} = {more_or_equal_r_rate*100}%\n'
 
     print(summary_str)
 
     # save success rate to txt
-    result_file_name = 'result_' + ckpt_name.split('.')[0] + '.txt'
+    result_file_name = 'result_' + Path(ckpt_path).stem + '.txt'
     with open(os.path.join(ckpt_dir, result_file_name), 'w') as f:
         f.write(summary_str)
         f.write(repr(episode_returns))
@@ -316,6 +557,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
 def forward_pass(data, policy):
     image_data, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
 
@@ -332,12 +574,67 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
+    if config['resume']:
+        ckpt_path = find_checkpoint(config['resume'])
+        print(f'resuming from {ckpt_path}')
+        checkpoint = torch.load(ckpt_path)
+        start_epoch = checkpoint['epoch']
+        min_val_loss = checkpoint['val_loss']
+        policy.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['opt_state_dict'])
+    else:
+        start_epoch = 0
+        min_val_loss = np.inf
+
     train_history = []
     validation_history = []
-    min_val_loss = np.inf
-    best_ckpt_info = None
-    for epoch in tqdm(range(num_epochs)):
-        print(f'\nEpoch {epoch}')
+
+    pbar = tqdm(range(start_epoch, start_epoch + num_epochs))
+    for iteration, epoch in enumerate(pbar):
+
+        # training
+        policy.train()
+        optimizer.zero_grad()
+        timing = {'dataload': [], 'forward': [], 'backward': []}
+
+        dataload_ts_start = time.time()
+        for batch_idx, data in enumerate(train_dataloader):
+            forward_pass_ts_start = time.time()
+
+            forward_dict = forward_pass(data, policy)
+
+            loss = forward_dict['loss']
+
+            backward_ts_start = time.time()
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            train_history.append(detach_dict(forward_dict))
+            timing['dataload'] += [forward_pass_ts_start - dataload_ts_start]
+            timing['forward'] += [backward_ts_start - forward_pass_ts_start]
+            dataload_ts_start = time.time()
+            timing['backward'] += [dataload_ts_start - backward_ts_start]
+
+            wandb.log({
+                'train_loss': loss.item(),
+                'train_l1': forward_dict['l1'].item(),
+                'train_Kl': forward_dict['kl'].item()
+            })
+
+        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*iteration:(batch_idx+1)*(iteration+1)])
+        epoch_train_loss = epoch_summary['loss']
+        summary_string = ''
+        summary_string += f"epoch: {epoch} " \
+                          f"loss: {epoch_train_loss:.5f}, " \
+                          f"load_t: {sum(timing['dataload']):.2f}  " \
+                          f"fp_t {sum(timing['forward']):.2f} " \
+                          f"bp_t {sum(timing['backward']):.2f} "
+
+        for k, v in epoch_summary.items():
+            summary_string += f'{k}: {v.item():.3f} '
+
         # validation
         with torch.inference_mode():
             policy.eval()
@@ -345,55 +642,60 @@ def train_bc(train_dataloader, val_dataloader, config):
             for batch_idx, data in enumerate(val_dataloader):
                 forward_dict = forward_pass(data, policy)
                 epoch_dicts.append(forward_dict)
+                wandb.log({
+                    'val_loss': forward_dict['loss'].item(),
+                    'val_l1': forward_dict['l1'].item(),
+                    'val_Kl': forward_dict['kl'].item()
+                })
+
             epoch_summary = compute_dict_mean(epoch_dicts)
             validation_history.append(epoch_summary)
 
             epoch_val_loss = epoch_summary['loss']
-            if epoch_val_loss < min_val_loss:
-                min_val_loss = epoch_val_loss
-                best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-        print(f'Val loss:   {epoch_val_loss:.5f}')
-        summary_string = ''
+
+            min_val_loss = save_best_checkpoints(ckpt_dir, epoch_val_loss, min_val_loss, policy, optimizer, epoch_train_loss, epoch,
+                                                 top_n_checkpoints=8)
+
+            wandb.log({
+                'epoch_train_loss': epoch_train_loss,
+                'epoch_val_loss': epoch_val_loss,
+                'min_val_loss': min_val_loss
+            })
+
+        summary_string += f'Best ckpt, val loss {min_val_loss:.6f} '
+
+        summary_string += f'Val loss: {epoch_val_loss:.5f} '
+
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
-        print(summary_string)
+        pbar.set_description(summary_string)
 
-        # training
-        policy.train()
-        optimizer.zero_grad()
-        for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass(data, policy)
-            # backward
-            loss = forward_dict['loss']
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            train_history.append(detach_dict(forward_dict))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
-        epoch_train_loss = epoch_summary['loss']
-        print(f'Train loss: {epoch_train_loss:.5f}')
-        summary_string = ''
-        for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
-        print(summary_string)
-
-        if epoch % 100 == 0:
+        if epoch % 1000 == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
-            torch.save(policy.state_dict(), ckpt_path)
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "train_loss": epoch_train_loss,
+                    "val_loss": min_val_loss,
+                    "model_state_dict": policy.state_dict(),
+                    "opt_state_dict": optimizer.state_dict()
+                }, ckpt_path)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
 
     ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
-    torch.save(policy.state_dict(), ckpt_path)
+    torch.save(
+        {
+            "epoch": start_epoch + num_epochs,
+            "train_loss": 0,
+            "val_loss": min_val_loss,
+            "model_state_dict": policy.state_dict(),
+            "opt_state_dict": optimizer.state_dict()
+        }, ckpt_path)
 
-    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
-    torch.save(best_state_dict, ckpt_path)
-    print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
+    print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f}')
 
     # save training curves
     plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
-
-    return best_ckpt_info
 
 
 def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
@@ -410,20 +712,24 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
         plt.legend()
         plt.title(key)
         plt.savefig(plot_path)
-    print(f'Saved plots to {ckpt_dir}')
+    # print(f'Saved plots to {ckpt_dir}')
 
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--resume', action='store', type=str, help='resume_dir', required=False)
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
+    parser.add_argument('--ckpt_path', required=False, default=None, help='path to specific checkpoint for evaluation')
     parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
     parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
     parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    parser.add_argument('--samples_per_epoch', action='store', type=int, help='number of samples per episode per epoch', default=16)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
@@ -431,5 +737,14 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
-    
-    main(vars(parser.parse_args()))
+    args = parser.parse_args()
+
+    args_dict = vars(args)
+
+    mode = 'disabled' if args.eval else 'online'
+    run = wandb.init(project=f'imitate_{args.task_name}', config=args, mode=mode)
+    args_dict['run_name'] = run.name
+    if not args.eval:
+        args_dict['ckpt_dir'] = f"{args.ckpt_dir}/{run.name}"
+
+    main(args_dict)
