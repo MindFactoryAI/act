@@ -7,7 +7,11 @@ data_local
 .vscode
 _wandb
 
-**/.idea
+.idea/act.iml
+.idea/misc.xml
+.idea/modules.xml
+.idea/vcs.xml
+
 **/.DS_Store
 
 fuse.cfg
