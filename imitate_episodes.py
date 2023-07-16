@@ -4,21 +4,19 @@ import os
 import pickle
 import argparse
 import matplotlib.pyplot as plt
-from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
 import sys
 import tty
 import termios
-import shutil
 from pathlib import Path
 import json
 
-import constants
 import wandb
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
+from robot_utils import execute_policy_on_env
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
