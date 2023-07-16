@@ -51,6 +51,7 @@ class DETRVAE(nn.Module):
         hidden_dim = transformer.d_model
         self.action_head = nn.Linear(hidden_dim, state_dim)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
+        self.value = nn.Linear(hidden_dim, 1)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         if backbones is not None:
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
@@ -180,8 +181,9 @@ class DETRVAE(nn.Module):
 
         a_hat = self.action_head(hidden_state)
         is_pad_hat = self.is_pad_head(hidden_state)
+        value_hat = self.value(hidden_state.detach())
 
-        return a_hat, is_pad_hat, [mu, logvar]
+        return a_hat, is_pad_hat, [mu, logvar], value_hat
 
 
 

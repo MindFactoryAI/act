@@ -67,7 +67,8 @@ def get_args_parser():
     parser.add_argument('--temporal_agg', action='store_true')
     parser.add_argument('--resume', action='store', type=str, help='resume_dir', required=False)
     parser.add_argument('--samples_per_epoch', action='store', type=int, help='number of samples per episode per epoch', default=8)
-
+    parser.add_argument('--cutout_prob', type=float, default=0.0)
+    parser.add_argument('--cutout_patch_size', type=int, default=300)
     return parser
 
 

@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torchvision
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
+from torchvision.models import ResNet18_Weights
 from typing import Dict, List
 
 from util.misc import NestedTensor, is_main_process
@@ -91,7 +92,11 @@ class Backbone(BackboneBase):
                  dilation: bool):
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
-            pretrained=is_main_process(), norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
+            weights=ResNet18_Weights.DEFAULT,
+            # DN: for small batch sizes FrozenBatchNorm2d is good
+            # https://github.com/facebookresearch/maskrcnn-benchmark/issues/267
+            norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
+
         num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
 

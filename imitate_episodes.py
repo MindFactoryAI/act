@@ -35,6 +35,18 @@ import time
 e = IPython.embed
 
 
+def trajectory_similarity(l1_dist, policy_actions, expert_dist):
+
+    # KL divergence between distributions
+    policy_dist = torch.distributions.Normal(policy_actions, torch.std(policy_actions))
+    kl_div = torch.distributions.kl_divergence(policy_dist, expert_dist)
+
+    # Trajectory Similarity Index
+    tsi = l1_dist + kl_div
+
+    return tsi
+
+
 def best_checkpoint(checkpoint_dir, n=0):
     """
     checkpoint dir: directory to find checkpoints
@@ -66,13 +78,21 @@ def find_checkpoint(ckpt_dir):
         exit(1)
 
 
-def list_checkpoints(checkpoint_dir):
-    return sorted(list(Path(checkpoint_dir).glob('*.ckpt')))
+def list_checkpoints(checkpoint_dir, prefix=None):
+    if prefix is None:
+        return sorted(list(Path(checkpoint_dir).glob('*.ckpt')))
+    else:
+        return sorted(list(Path(checkpoint_dir).glob(f'{prefix}*.ckpt')))
 
 
-def save_best_checkpoints(checkpoint_dir, val_loss, min_val_loss, policy, optimizer, epoch_train_loss, epoch, top_n_checkpoints=5):
+def save_best_checkpoints(checkpoint_dir, run,
+                          val_loss, min_val_loss,
+                          inv_learning_error, min_inv_learning_error,
+                          policy, optimizer,
+                          epoch_train_loss, epoch, top_n_checkpoints=5):
     """
     checkpoint_dir: the directory to save checkpoints
+    run: wandb_run
     val_loss: the val loss
     min_val_loss: the minimum val_loss reached so far
     policy: the model
@@ -86,7 +106,7 @@ def save_best_checkpoints(checkpoint_dir, val_loss, min_val_loss, policy, optimi
         min_val_loss = val_loss
 
         # Remove any existing checkpoints if there are more than n
-        checkpoints = list_checkpoints(checkpoint_dir)
+        checkpoints = list_checkpoints(checkpoint_dir, 'policy_min_val_loss')
         if len(checkpoints) >= top_n_checkpoints:
             lowest_val_checkpoint = checkpoints[-1]
             if not Path(str(lowest_val_checkpoint) + '.data').exists():
@@ -97,12 +117,35 @@ def save_best_checkpoints(checkpoint_dir, val_loss, min_val_loss, policy, optimi
             "epoch": epoch,
             "train_loss": epoch_train_loss,
             "val_loss": min_val_loss,
+            "min_inv_learning_error": min_inv_learning_error,
             "model_state_dict": policy.state_dict(),
-            "opt_state_dict": optimizer.state_dict()
-        },
-            f'{checkpoint_dir}/policy_best_{val_loss:.5f}.ckpt')
+            "opt_state_dict": optimizer.state_dict(),
+            "wandb_id": run.id
+        }, f'{checkpoint_dir}/policy_min_val_loss{val_loss:.5f}.ckpt')
 
-    return min_val_loss
+    if inv_learning_error < min_inv_learning_error:
+        # Update the best validation loss
+        min_inv_learning_error = inv_learning_error
+
+        # Remove any existing checkpoints if there are more than n
+        checkpoints = list_checkpoints(checkpoint_dir, 'policy_best_inv_learning_error')
+        if len(checkpoints) >= top_n_checkpoints:
+            lowest_val_checkpoint = checkpoints[-1]
+            if not Path(str(lowest_val_checkpoint) + '.data').exists():
+                os.remove(os.path.join(checkpoints[-1]))
+
+        # Save the new checkpoint
+        torch.save({
+            "epoch": epoch,
+            "train_loss": epoch_train_loss,
+            "val_loss": min_val_loss,
+            "min_inv_learning_error": min_inv_learning_error,
+            "model_state_dict": policy.state_dict(),
+            "opt_state_dict": optimizer.state_dict(),
+            "wandb_id": run.id
+        }, f'{checkpoint_dir}/policy_best_inv_learning_error_{inv_learning_error:.5f}.ckpt')
+
+    return min_val_loss, min_inv_learning_error
 
 
 class CheckPointInfo(object):
@@ -184,6 +227,19 @@ class CheckPointInfo(object):
         return self.successes / self.trials_n
 
 
+def is_sim(task_name):
+    return task_name[:4] == 'sim_'
+
+
+def get_task_config(task_name):
+    if is_sim(task_name):
+        from constants import SIM_TASK_CONFIGS
+        return SIM_TASK_CONFIGS[task_name]
+    else:
+        from aloha_scripts.constants import TASK_CONFIGS
+        return TASK_CONFIGS[task_name]
+
+
 def main(args):
     set_seed(1)
     # command line parameters
@@ -196,14 +252,7 @@ def main(args):
     batch_size_val = args['batch_size']
     num_epochs = args['num_epochs']
 
-    # get task parameters
-    is_sim = task_name[:4] == 'sim_'
-    if is_sim:
-        from constants import SIM_TASK_CONFIGS
-        task_config = SIM_TASK_CONFIGS[task_name]
-    else:
-        from aloha_scripts.constants import TASK_CONFIGS
-        task_config = TASK_CONFIGS[task_name]
+    task_config = get_task_config(task_name)
     dataset_dir = task_config['dataset_dir']
     num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
@@ -249,7 +298,7 @@ def main(args):
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim,
+        'real_robot': not is_sim(task_name),
         'resume': args['resume']
     }
 
@@ -299,15 +348,7 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, args['samples_per_epoch'])
-
-    # save dataset stats
-    Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
-    stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
-    with open(stats_path, 'wb') as f:
-        pickle.dump(stats, f)
-
-    train_bc(train_dataloader, val_dataloader, config)
+    train_bc(config)
 
 
 def make_policy(policy_class, policy_config):
@@ -351,6 +392,62 @@ def getch():
     return char
 
 
+def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, stats, camera_names, pre_process=None, post_process=None, num_queries=100, query_frequency=20):
+
+    pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']#  if pre_process is None else pre_process
+    post_process = lambda a: a * stats['action_std'] + stats['action_mean']# if post_process  is None else post_process
+
+    all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
+    qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
+    image_list = []  # for visualization
+    qpos_list = []
+    target_qpos_list = []
+    rewards = []
+
+    with torch.inference_mode():
+        for t in range(max_timesteps):
+
+            ### process previous timestep to get qpos and image_list
+            obs = initial_state.observation
+            if 'images' in obs:
+                image_list.append(obs['images'])
+            else:
+                image_list.append({'main': obs['image']})
+            qpos_numpy = np.array(obs['qpos'])
+            qpos = pre_process(qpos_numpy)
+            qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+            qpos_history[:, t] = qpos
+            curr_image = get_image(initial_state, camera_names)
+
+            if t % query_frequency == 0:
+                all_actions = policy(qpos, curr_image)
+
+            all_time_actions[[t], t:t + num_queries] = all_actions
+            actions_for_curr_step = all_time_actions[:, t]
+            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+            actions_for_curr_step = actions_for_curr_step[actions_populated]
+            k = 0.01
+            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+            exp_weights = exp_weights / exp_weights.sum()
+            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+
+            ### post-process actions
+            raw_action = raw_action.squeeze(0).cpu().numpy()
+            action = post_process(raw_action)
+            target_qpos = action
+
+            ### step the environment
+            initial_state = env.step(target_qpos)
+
+            ### for visualization
+            qpos_list.append(qpos_numpy)
+            target_qpos_list.append(target_qpos)
+            rewards.append(initial_state.reward)
+
+        return qpos_history, image_list, qpos_list, target_qpos_list, rewards
+
+
 def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
 
     print(f'evaluating {ckpt_path}')
@@ -380,9 +477,6 @@ def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
 
-    pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
-    post_process = lambda a: a * stats['action_std'] + stats['action_mean']
-
     # load environment
     if real_robot:
         from aloha_scripts.robot_utils import move_grippers, reboot_grippers # requires aloha
@@ -396,9 +490,8 @@ def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
         env_max_reward = env.task.max_reward
 
     query_frequency = policy_config['num_queries']
-    if temporal_agg:
-        query_frequency = 20
-        num_queries = policy_config['num_queries']
+    query_frequency = 20
+    num_queries = policy_config['num_queries']
 
     max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
 
@@ -417,90 +510,18 @@ def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
 
         ts = env.reset()
 
-        print("press any key to continue, q to quit")
-        char = getch()
-        if char == 'q':
-            exit()
+        # print("press any key to continue, q to quit")
+        # char = getch()
+        # if char == 'q':
+        #     exit()
 
-        ### onscreen render
-        if onscreen_render:
-            ax = plt.subplot()
-            plt_img = ax.imshow(env._physics.render(height=480, width=640, camera_id=onscreen_cam))
-            plt.ion()
-
-        ### evaluation loop
-        if temporal_agg:
-            all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, state_dim]).cuda()
-
-        qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
-        image_list = [] # for visualization
-        qpos_list = []
-        target_qpos_list = []
-        rewards = []
-
-        with torch.inference_mode():
-            for t in range(max_timesteps):
-                ### update onscreen render and wait for DT
-                if onscreen_render:
-                    image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
-                    plt_img.set_data(image)
-                    plt.pause(DT)
-
-                ### process previous timestep to get qpos and image_list
-                obs = ts.observation
-                if 'images' in obs:
-                    image_list.append(obs['images'])
-                else:
-                    image_list.append({'main': obs['image']})
-                qpos_numpy = np.array(obs['qpos'])
-                qpos = pre_process(qpos_numpy)
-                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                qpos_history[:, t] = qpos
-                curr_image = get_image(ts, camera_names)
-
-                ### query policy
-                if config['policy_class'] == "ACT":
-                    if t % query_frequency == 0:
-                        all_actions = policy(qpos, curr_image)
-                    if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                    else:
-                        raw_action = all_actions[:, t % query_frequency]
-                elif config['policy_class'] == "CNNMLP":
-                    raw_action = policy(qpos, curr_image)
-                else:
-                    raise NotImplementedError
-
-                ### post-process actions
-                raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
-                target_qpos = action
-
-
-                ### step the environment
-                ts = env.step(target_qpos)
-
-                ### for visualization
-                qpos_list.append(qpos_numpy)
-                target_qpos_list.append(target_qpos)
-                rewards.append(ts.reward)
-
-
-            plt.close()
+        qpos_history, image_list, qpos_list, target_qpos_list, rewards = execute_policy_on_env(policy, env, ts, max_timesteps, state_dim, stats, camera_names, query_frequency=query_frequency, num_queries=num_queries)
 
         if real_robot:
             move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
             pass
 
-        print("Space for PASS, any key for FAIL, q for exit")
+        print("Space for PASS, any key for FAIL, s for SCRATCH, q for exit")
         char = getch()
         if char == 'q':
             exit()
@@ -508,6 +529,8 @@ def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
             print("PASS")
             rewards.append(1.0)
             checkpoint_info.values['trials'].append(1)
+        elif char == 's':
+            print("SCRATCH")
         else:
             print("FAIL")
             rewards.append(0.0)
@@ -555,18 +578,20 @@ def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
 
 
 def forward_pass(data, policy):
-    image_data, qpos_data, action_data, is_pad = data
-    image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+    image_data, qpos_data, action_data, is_pad, value = data
+    image_data, qpos_data, action_data, is_pad, value = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda(), value.cuda()
 
-    return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
+    return policy(qpos_data, image_data, action_data, is_pad, value) # TODO remove None
 
 
-def train_bc(train_dataloader, val_dataloader, config):
+def train_bc(config):
+
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
     policy_class = config['policy_class']
     policy_config = config['policy_config']
+
 
     set_seed(seed)
 
@@ -580,120 +605,161 @@ def train_bc(train_dataloader, val_dataloader, config):
         checkpoint = torch.load(ckpt_path)
         start_epoch = checkpoint['epoch']
         min_val_loss = checkpoint['val_loss']
+        min_inv_learning_error = checkpoint['min_inv_learning_error'] if 'min_inv_learning_error' in checkpoint else np.inf
         policy.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['opt_state_dict'])
-    else:
+        if 'wandb_id' in checkpoint:
+            id = checkpoint['wandb_id']
+        else:
+            id = None
+        run = wandb.init(project=f'imitate_{args.task_name}', config=config, id=id, resume='allow')
+    else:  # new run
+        run = wandb.init(project=f'imitate_{args.task_name}', config=config)
         start_epoch = 0
         min_val_loss = np.inf
+        min_inv_learning_error = np.inf
+
+    ckpt_dir = f"{ckpt_dir}/{run.name}"
+
+    task_config = get_task_config(args.task_name)
+    dataset_dir = task_config['dataset_dir']
+    num_episodes = task_config['num_episodes']
+    episode_len = task_config['episode_len']
+    camera_names = task_config['camera_names']
+    validation_set = task_config['validation_set'] if 'validation_set' in task_config else None
+    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, args.batch_size, args.batch_size, args.samples_per_epoch,
+                                                           cutout_prob=args_dict['cutout_prob'], cutout_patch_size=args_dict['cutout_patch_size'], validation_set=validation_set)
+
+    # save dataset stats
+    Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
+    stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+    with open(stats_path, 'wb') as f:
+        pickle.dump(stats, f)
+
+    def save_policy_last(run, epoch, min_val_loss, min_inv_learning_error):
+        ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
+        torch.save(
+            {
+                "epoch": epoch,
+                "train_loss": 0,
+                "val_loss": min_val_loss,
+                "min_inv_learning_error": min_inv_learning_error,
+                "model_state_dict": policy.state_dict(),
+                "opt_state_dict": optimizer.state_dict(),
+                "wandb_id": run.id
+            }, ckpt_path)
+
 
     train_history = []
     validation_history = []
 
+    current_epoch = start_epoch
+
     pbar = tqdm(range(start_epoch, start_epoch + num_epochs))
     for iteration, epoch in enumerate(pbar):
+        current_epoch = epoch
 
-        # training
-        policy.train()
-        optimizer.zero_grad()
-        timing = {'dataload': [], 'forward': [], 'backward': []}
-
-        dataload_ts_start = time.time()
-        for batch_idx, data in enumerate(train_dataloader):
-            forward_pass_ts_start = time.time()
-
-            forward_dict = forward_pass(data, policy)
-
-            loss = forward_dict['loss']
-
-            backward_ts_start = time.time()
-
-            loss.backward()
-            optimizer.step()
+        try:
+            # training
+            policy.train()
             optimizer.zero_grad()
+            timing = {'dataload': [], 'forward': [], 'backward': []}
 
-            train_history.append(detach_dict(forward_dict))
-            timing['dataload'] += [forward_pass_ts_start - dataload_ts_start]
-            timing['forward'] += [backward_ts_start - forward_pass_ts_start]
             dataload_ts_start = time.time()
-            timing['backward'] += [dataload_ts_start - backward_ts_start]
+            for batch_idx, data in enumerate(train_dataloader):
+                forward_pass_ts_start = time.time()
 
-            wandb.log({
-                'train_loss': loss.item(),
-                'train_l1': forward_dict['l1'].item(),
-                'train_Kl': forward_dict['kl'].item()
-            })
-
-        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*iteration:(batch_idx+1)*(iteration+1)])
-        epoch_train_loss = epoch_summary['loss']
-        summary_string = ''
-        summary_string += f"epoch: {epoch} " \
-                          f"loss: {epoch_train_loss:.5f}, " \
-                          f"load_t: {sum(timing['dataload']):.2f}  " \
-                          f"fp_t {sum(timing['forward']):.2f} " \
-                          f"bp_t {sum(timing['backward']):.2f} "
-
-        for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
-
-        # validation
-        with torch.inference_mode():
-            policy.eval()
-            epoch_dicts = []
-            for batch_idx, data in enumerate(val_dataloader):
                 forward_dict = forward_pass(data, policy)
-                epoch_dicts.append(forward_dict)
+
+                loss = forward_dict['loss']
+
+                backward_ts_start = time.time()
+
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+
+                train_history.append(detach_dict(forward_dict))
+                timing['dataload'] += [forward_pass_ts_start - dataload_ts_start]
+                timing['forward'] += [backward_ts_start - forward_pass_ts_start]
+                dataload_ts_start = time.time()
+                timing['backward'] += [dataload_ts_start - backward_ts_start]
+
                 wandb.log({
-                    'val_loss': forward_dict['loss'].item(),
-                    'val_l1': forward_dict['l1'].item(),
-                    'val_Kl': forward_dict['kl'].item()
+                    'train_loss': loss.item(),
+                    'train_l1': forward_dict['l1'].item(),
+                    'train_Kl': forward_dict['kl'].item(),
+                    'train_inv_learning_error': forward_dict['value'].item(),
                 })
 
-            epoch_summary = compute_dict_mean(epoch_dicts)
-            validation_history.append(epoch_summary)
 
-            epoch_val_loss = epoch_summary['loss']
+            # compute train epoch stats
+            epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*iteration:(batch_idx+1)*(iteration+1)])
+            epoch_train_loss = epoch_summary['loss']
+            summary_string = ''
+            summary_string += f"epoch: {epoch} " \
+                              f"loss: {epoch_train_loss:.5f}, " \
+                              f"load_t: {sum(timing['dataload']):.2f}  " \
+                              f"fp_t {sum(timing['forward']):.2f} " \
+                              f"bp_t {sum(timing['backward']):.2f} "
 
-            min_val_loss = save_best_checkpoints(ckpt_dir, epoch_val_loss, min_val_loss, policy, optimizer, epoch_train_loss, epoch,
-                                                 top_n_checkpoints=8)
+            # validation
+            with torch.inference_mode():
+                policy.eval()
+                epoch_dicts = []
+                for batch_idx, data in enumerate(val_dataloader):
+                    forward_dict = forward_pass(data, policy)
+                    epoch_dicts.append(forward_dict)
+                    wandb.log({
+                        'val_loss': forward_dict['loss'].item(),
+                        'val_l1': forward_dict['l1'].item(),
+                        'val_Kl': forward_dict['kl'].item(),
+                        'val_inv_learning_error': forward_dict['value'].item(),
+                    })
 
-            wandb.log({
-                'epoch_train_loss': epoch_train_loss,
-                'epoch_val_loss': epoch_val_loss,
-                'min_val_loss': min_val_loss
-            })
+                epoch_summary = compute_dict_mean(epoch_dicts)
+                validation_history.append(epoch_summary)
 
-        summary_string += f'Best ckpt, val loss {min_val_loss:.6f} '
+                epoch_val_loss = epoch_summary['loss']
+                epoch_inv_learning_error = epoch_summary['value']
 
-        summary_string += f'Val loss: {epoch_val_loss:.5f} '
+                min_val_loss, min_inv_learning_error = save_best_checkpoints(ckpt_dir, run,
+                                                                             epoch_val_loss, min_val_loss,
+                                                                             epoch_inv_learning_error, min_inv_learning_error,
+                                                                             policy, optimizer, epoch_train_loss, epoch,
+                                                                             top_n_checkpoints=3)
 
-        for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
-        pbar.set_description(summary_string)
+                wandb.log({
+                    'epoch_train_loss': epoch_train_loss,
+                    'epoch_val_loss': epoch_val_loss,
+                    'min_val_loss': min_val_loss,
+                    'epoch_inv_learning_error': epoch_inv_learning_error,
+                    'min_inv_learning_error': min_inv_learning_error
+                })
 
-        if epoch % 1000 == 0:
-            ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "train_loss": epoch_train_loss,
-                    "val_loss": min_val_loss,
-                    "model_state_dict": policy.state_dict(),
-                    "opt_state_dict": optimizer.state_dict()
-                }, ckpt_path)
-            plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
+                summary_string += f'Best ckpt, val loss {min_val_loss:.6f} '
+                pbar.set_description(summary_string)
 
-    ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
-    torch.save(
-        {
-            "epoch": start_epoch + num_epochs,
-            "train_loss": 0,
-            "val_loss": min_val_loss,
-            "model_state_dict": policy.state_dict(),
-            "opt_state_dict": optimizer.state_dict()
-        }, ckpt_path)
+                if epoch % 1000 == 0:
+                    ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "train_loss": epoch_train_loss,
+                            "val_loss": min_val_loss,
+                            "min_inv_learning_error": min_inv_learning_error,
+                            "model_state_dict": policy.state_dict(),
+                            "opt_state_dict": optimizer.state_dict(),
+                            "wandb_id": run.id
+                        }, ckpt_path)
+                    plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
 
-    print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f}')
+        except KeyboardInterrupt:
+            print(f'Training terminated: seed {seed}, val loss {min_val_loss:.6f}')
+            break
 
+    save_policy_last(run, current_epoch, min_val_loss, min_inv_learning_error)
+    print(f'Saved checkpoint policy_last at epoch {current_epoch}, best_checkpoint {min_val_loss}')
     # save training curves
     plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
 
@@ -730,6 +796,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
     parser.add_argument('--samples_per_epoch', action='store', type=int, help='number of samples per episode per epoch', default=16)
+    parser.add_argument('--cutout_prob', type=float, default=0.0)
+    parser.add_argument('--cutout_patch_size', type=int, default=300)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
@@ -740,11 +808,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     args_dict = vars(args)
-
-    mode = 'disabled' if args.eval else 'online'
-    run = wandb.init(project=f'imitate_{args.task_name}', config=args, mode=mode)
-    args_dict['run_name'] = run.name
-    if not args.eval:
-        args_dict['ckpt_dir'] = f"{args.ckpt_dir}/{run.name}"
-
     main(args_dict)
