@@ -69,7 +69,10 @@ def get_args_parser():
     parser.add_argument('--samples_per_epoch', action='store', type=int, help='number of samples per episode per epoch', default=8)
     parser.add_argument('--cutout_prob', type=float, default=0.0)
     parser.add_argument('--cutout_patch_size', type=int, default=300)
+    parser.add_argument('--current_limit', type=int, help='gripper current limit', default=300, required=False)
     return parser
+
+
 
 
 def build_ACT_model_and_optimizer(args_override):

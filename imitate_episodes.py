@@ -16,13 +16,13 @@ import wandb
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
-from robot_utils import execute_policy_on_env
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
-
+from constants import MASTER_GRIPPER_JOINT_UNNORMALIZE_FN
+from interbotix_xs_msgs.msg import JointSingleCommand
 
 from sim_env import BOX_POSE
 
@@ -338,7 +338,7 @@ def main(args):
 
         results = []
 
-        success_rate, avg_return = eval_bc(config, run_dir, ckpt, num_rollouts, save_episode=False)
+        success_rate, avg_return = eval_bc(config, ckpt, num_rollouts, save_episode=False)
         results.append([args['ckpt_path'], success_rate, avg_return])
 
         for ckpt_name, success_rate, avg_return in results:
@@ -390,10 +390,14 @@ def getch():
     return char
 
 
-def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, stats, camera_names, pre_process=None, post_process=None, num_queries=100, query_frequency=20):
+def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, stats, camera_names,
+                          pre_process=None, post_process=None, num_queries=100, query_frequency=20,
+                          master_bot_left=None, master_bot_right=None):
 
-    pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']#  if pre_process is None else pre_process
-    post_process = lambda a: a * stats['action_std'] + stats['action_mean']# if post_process  is None else post_process
+    if pre_process is None:
+        pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
+    if post_process is None:
+        post_process = lambda a: a * stats['action_std'] + stats['action_mean']# if post_process  is None else post_process
 
     all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
     qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
@@ -401,12 +405,13 @@ def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, 
     qpos_list = []
     target_qpos_list = []
     rewards = []
+    state = initial_state
 
     with torch.inference_mode():
         for t in range(max_timesteps):
 
             ### process previous timestep to get qpos and image_list
-            obs = initial_state.observation
+            obs = state.observation
             if 'images' in obs:
                 image_list.append(obs['images'])
             else:
@@ -415,7 +420,7 @@ def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, 
             qpos = pre_process(qpos_numpy)
             qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
             qpos_history[:, t] = qpos
-            curr_image = get_image(initial_state, camera_names)
+            curr_image = get_image(state, camera_names)
 
             if t % query_frequency == 0:
                 all_actions = policy(qpos, curr_image)
@@ -436,17 +441,44 @@ def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, 
             target_qpos = action
 
             ### step the environment
-            initial_state = env.step(target_qpos)
+            state = env.step(target_qpos)
+            if master_bot_left and master_bot_right:
+                state_len = int(len(action) / 2)
+                left_action = action[:state_len]
+                right_action = action[state_len:]
+                master_bot_left.arm.set_joint_positions(left_action[:6], blocking=False)
+                master_bot_right.arm.set_joint_positions(right_action[:6], blocking=False)
+
+                joint_single_command = JointSingleCommand(name="gripper")
+
+                joint_single_command.cmd = MASTER_GRIPPER_JOINT_UNNORMALIZE_FN(left_action[-1])
+                master_bot_left.gripper.core.pub_single.publish(joint_single_command)
+
+                joint_single_command.cmd = MASTER_GRIPPER_JOINT_UNNORMALIZE_FN(right_action[-1])
+                master_bot_right.gripper.core.pub_single.publish(joint_single_command)
 
             ### for visualization
             qpos_list.append(qpos_numpy)
             target_qpos_list.append(target_qpos)
-            rewards.append(initial_state.reward)
+            rewards.append(state.reward)
 
-        return qpos_history, image_list, qpos_list, target_qpos_list, rewards
+        return qpos_history, image_list, qpos_list, target_qpos_list, rewards, state
 
 
-def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
+def load_policy_and_stats(policy_config, ckpt_path, policy_class='ACT'):
+    policy = make_policy(policy_class, policy_config)
+    checkpoint = torch.load(ckpt_path)
+    loading_status = policy.load_state_dict(checkpoint['model_state_dict'])
+    print(loading_status)
+    print(f"Loaded: {ckpt_path} val_loss: {checkpoint['val_loss']}")
+    stats_path = Path(ckpt_path).parent/Path('dataset_stats.pkl')
+    # stats_path = os.path.join(run_dir, f'dataset_stats.pkl')
+    with open(stats_path, 'rb') as f:
+        stats = pickle.load(f)
+    return policy, stats
+
+
+def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
 
     print(f'evaluating {ckpt_path}')
 
@@ -463,17 +495,7 @@ def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
     temporal_agg = config['temporal_agg']
     onscreen_cam = 'angle'
 
-    # load policy and stats
-    policy = make_policy(policy_class, policy_config)
-    checkpoint = torch.load(ckpt_path)
-    loading_status = policy.load_state_dict(checkpoint['model_state_dict'])
-    print(loading_status)
-    policy.cuda()
-    policy.eval()
-    print(f"Loaded: {ckpt_path} val_loss: {checkpoint['val_loss']}")
-    stats_path = os.path.join(run_dir, f'dataset_stats.pkl')
-    with open(stats_path, 'rb') as f:
-        stats = pickle.load(f)
+    policy, stats = load_policy_and_stats(policy_config, ckpt_path, policy_class)
 
     # load environment
     if real_robot:
@@ -513,7 +535,7 @@ def eval_bc(config, run_dir, ckpt_path, num_rollouts, save_episode=False):
         # if char == 'q':
         #     exit()
 
-        qpos_history, image_list, qpos_list, target_qpos_list, rewards = execute_policy_on_env(policy, env, ts, max_timesteps, state_dim, stats, camera_names, query_frequency=query_frequency, num_queries=num_queries)
+        qpos_history, image_list, qpos_list, target_qpos_list, rewards, last_state = execute_policy_on_env(policy, env, ts, max_timesteps, state_dim, stats, camera_names, query_frequency=query_frequency, num_queries=num_queries)
 
         if real_robot:
             move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
