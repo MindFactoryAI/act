@@ -35,10 +35,18 @@ def main(args):
         # execute first policy
         wait_for_start(master_bot_left, master_bot_right, human_takeover=False)
 
-        state, actions, timings = [initial_state], [], []
-        state, actions, timings = grasp_battery.execute(env, state, actions, timings,  master_bot_left, master_bot_right)
-        state, actions, timings = move_to_start.execute(env, state, actions, timings, master_bot_left, master_bot_right)
-        state, actions, timings = capture_drop_battery_in_slot_only.execute(env, state, actions, timings, master_bot_left, master_bot_right)
+        """ 
+        format of capture buffer is
+        
+        states  [s0, s1, s2, s3]
+        actions [a0, a1, a2]
+        
+        s3 is the terminal state and has no action associated with it
+        """
+        states, actions, timings = [initial_state], [], []
+        states, actions, timings = grasp_battery.execute(env, states, actions, timings,  master_bot_left, master_bot_right)
+        states, actions, timings = move_to_start.execute(env, states, actions, timings, master_bot_left, master_bot_right)
+        states, actions, timings = capture_drop_battery_in_slot_only.execute(env, states, actions, timings, master_bot_left, master_bot_right)
 
         reboot = args['reboot_every_episode']
 
