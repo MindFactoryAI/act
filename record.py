@@ -41,7 +41,10 @@ def main(args):
         states  [s0, s1, s2, s3]
         actions [a0, a1, a2]
         
-        s3 is the terminal state and has no action associated with it
+        s3 in this example is the terminal state and has no action associated with it
+        
+        each primitive run on the robot will append it's transitions to the capture buffer
+        mark and slice the buffer accordingly to recover segments
         """
         states, actions, timings = [initial_state], [], []
         states, actions, timings = grasp_battery.execute(env, states, actions, timings,  master_bot_left, master_bot_right)
