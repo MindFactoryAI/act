@@ -9,10 +9,6 @@ from primitives import build_primitive, PRIMITIVES
 
 
 def main(args):
-    task_config = TASK_CONFIGS[args['task_name']]
-    dataset_dir = task_config['dataset_dir']
-    max_timesteps = task_config['episode_len']
-    camera_names = task_config['camera_names']
     current_limit = args['current_limit']
 
     # source of data
@@ -23,37 +19,14 @@ def main(args):
     env = make_real_env(init_node=False, setup_robots=False, task=args['task_name'])
 
     reboot = True  # always reboot on the first episode
-    # checkpoint = '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'
-    # state_dim = 14
-    # policy_config = {
-    #     'lr': 1e-5,
-    #     'num_queries': args['chunk_size'],
-    #     'kl_weight': 0.0,
-    #     'hidden_dim': args['hidden_dim'],
-    #     'dim_feedforward': args['dim_feedforward'],
-    #     'lr_backbone': 1e-5,
-    #     'backbone': 'resnet18',
-    #     'enc_layers': 4,
-    #     'dec_layers': 7,
-    #     'nheads': 8,
-    #     'camera_names': camera_names
-    # }
-    #
-    # policy, stats = load_policy_and_stats(policy_config, checkpoint)
 
+    start_left_arm_pose, start_right_arm_pose = get_start_arm_pose(args['task_name'])
     grasp_battery = build_primitive(PRIMITIVES['grasp_battery'])
     move_to_start = build_primitive(PRIMITIVES['move_arms_to_start_pose'])
+    capture_drop_battery_in_slot_only = build_primitive(PRIMITIVES['capture_drop_battery_in_slot_only'])
 
     while True:
 
-        if args['episode_idx'] is not None:
-            episode_idx = args['episode_idx']
-        else:
-            episode_idx = get_auto_index(dataset_dir)
-        overwrite = True
-        dataset_name = f'episode_{episode_idx}'
-        print(dataset_name + '\n')
-        start_left_arm_pose, start_right_arm_pose = get_start_arm_pose(args['task_name'])
         opening_ceremony(master_bot_left, master_bot_right, env.puppet_bot_left, env.puppet_bot_right, reboot,
                          current_limit, start_left_arm_pose, start_right_arm_pose)
 
@@ -62,18 +35,11 @@ def main(args):
         # execute first policy
         wait_for_start(master_bot_left, master_bot_right, human_takeover=False)
 
-        state, actions, timings = grasp_battery.execute(env, [initial_state], [], [], master_bot_left, master_bot_right)
-
-        # move arm back to start pos
+        state, actions, timings = [initial_state], [], []
+        state, actions, timings = grasp_battery.execute(env, state, actions, timings,  master_bot_left, master_bot_right)
         state, actions, timings = move_to_start.execute(env, state, actions, timings, master_bot_left, master_bot_right)
+        state, actions, timings = capture_drop_battery_in_slot_only.execute(env, state, actions, timings, master_bot_left, master_bot_right)
 
-        # wait for start capture
-        wait_for_start(master_bot_left, master_bot_right)
-
-        is_healthy = capture_one_episode(state[-1], DT, max_timesteps, camera_names, dataset_dir, dataset_name,
-                                         overwrite, master_bot_left, master_bot_right, env)
-        if is_healthy and args['episode_idx'] is not None:
-            break
         reboot = args['reboot_every_episode']
 
 
@@ -87,11 +53,8 @@ if __name__ == '__main__':
     parser.add_argument('--reboot_every_episode', action='store_true', help='Episode index.', default=False,
                         required=False)
     parser.add_argument('--current_limit', type=int, help='gripper current limit', default=300, required=False)
-    # parser.add_argument('--hidden_dim', type=int, default=512)
-    # parser.add_argument('--chunk_size', type=int, default=100)
-    # parser.add_argument('--dim_feedforward', type=int, default=3200)
 
-    # dummy argument to make DETR happy
+    # dummy arguments to make DETR happy
     parser.add_argument('--policy_class', type=str, default='ACT')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num_epochs', type=int, default=1)

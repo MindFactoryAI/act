@@ -1,6 +1,10 @@
 from imitate_episodes import execute_policy_on_env, load_policy_and_stats
-from aloha_scripts.constants import TASK_CONFIGS, DT, MASTER_GRIPPER_JOINT_NORMALIZE_FN, PUPPET_GRIPPER_POSITION_CLOSE
-from aloha_scripts.robot_utils import get_arm_joint_positions, get_arm_gripper_positions
+from aloha_scripts.constants import TASK_CONFIGS, DT, MASTER_GRIPPER_JOINT_NORMALIZE_FN, PUPPET_GRIPPER_POSITION_CLOSE, \
+    PUPPET_GRIPPER_JOINT_OPEN
+from aloha_scripts.robot_utils import get_arm_joint_positions, get_arm_gripper_positions, move_grippers, torque_on
+from aloha_scripts.record_episodes import validate_dataset, teleoperate, print_dt_diagnosis, wait_for_start, \
+    save_episode, get_auto_index
+from pathlib import Path
 import time
 import numpy as np
 
@@ -28,6 +32,14 @@ PRIMITIVES = {
             'chunk_size': 100,
             'hidden_dim': 512,
             'dim_feedforward': 3200
+        }
+    },
+    "capture_drop_battery_in_slot_only": {
+        "module_name": "primitives",
+        "object_name": "Capture",
+        "args": [],
+        "kwargs": {
+            "task_name": "drop_battery_in_slot_only",
         }
     }
 }
@@ -57,6 +69,7 @@ class LinearMoveArms:
         self.gripper_target_right = gripper_target_right
 
     def execute(self, env, states, actions, timings, master_bot_left=None, master_bot_right=None):
+        assert len(states) >= 1, "Please ensure there is at least an initial state provided to start"
         num_steps = int(self.move_time / DT)
 
         puppet_left_traj = lerp_trajectory(env.puppet_bot_left, self.target_pose_left, num_steps)
@@ -122,7 +135,55 @@ class ACTPrimitive:
         self.policy, self.stats = load_policy_and_stats(policy_config, checkpoint)
 
     def execute(self, env, states, actions, timings, master_bot_left=None, master_bot_right=None):
+        assert len(states) >= 1, "Please ensure there is at least an initial state provided to start the policy"
         states, actions, timings = \
             execute_policy_on_env(self.policy, env, states, actions, timings, self.task['episode_len'], self.state_dim, self.stats, self.camera_names,
                                   master_bot_left=master_bot_left, master_bot_right=master_bot_right)
         return states, actions, timings
+
+
+class Capture:
+    def __init__(self, task_name, episode_index=None):
+        self.task = TASK_CONFIGS[task_name]
+        self.dataset_dir = self.task['dataset_dir']
+        assert Path(self.dataset_dir).exists(), f"dataset_dir: {self.dataset_dir} does not exist"
+        if episode_index is not None:
+            episode_idx = episode_index
+            overwrite = True
+        else:
+            episode_idx = get_auto_index(self.dataset_dir)
+            overwrite = False
+        self.dataset_name = f'episode_{episode_idx}'
+        self.dataset_path = validate_dataset(self.dataset_dir, self.dataset_name, overwrite)
+        print(self.dataset_name + '\n')
+
+    def execute(self, env, states, actions, timings, master_bot_left, master_bot_right):
+        assert len(states) >= 1, "Please ensure there is at least an initial state provided to start a recording"
+        start_pos_states, start_pos_actions = len(states), len(actions)
+
+        wait_for_start(master_bot_left, master_bot_right)
+
+        timesteps, actions, actual_dt_history = \
+            teleoperate(states, actions, timings, self.task['episode_len'], env, master_bot_left, master_bot_right)
+
+        # Torque on both master bots
+        torque_on(master_bot_left)
+        torque_on(master_bot_right)
+
+        # Open puppet grippers
+        env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "position")
+        env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "position")
+        move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)
+        env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
+        env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
+
+        freq_mean = print_dt_diagnosis(actual_dt_history[start_pos_actions:])
+        if freq_mean < 42:
+            raise Exception("Frequency Mean less than 42, robot capture is too slow")
+
+        # the initial state is at start_pos_state - 1, the first action taken is at start_pos_actions
+        save_states, save_actions = states[start_pos_states-1:], actions[start_pos_actions:]
+        did_save = save_episode(self.dataset_path, self.task['camera_names'], self.task['episode_len'], save_states, save_actions)
+
+        return timesteps, actions, actual_dt_history
+
