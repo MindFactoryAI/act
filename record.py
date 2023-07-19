@@ -5,6 +5,7 @@ from aloha_scripts.robot_utils import move_arms
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 from real_env import make_real_env, get_action
 from imitate_episodes import execute_policy_on_env, load_policy_and_stats
+from primitives import build_primitive, PRIMITIVES
 
 
 def main(args):
@@ -22,20 +23,26 @@ def main(args):
     env = make_real_env(init_node=False, setup_robots=False, task=args['task_name'])
 
     reboot = True  # always reboot on the first episode
+    # checkpoint = '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'
+    # state_dim = 14
+    # policy_config = {
+    #     'lr': 1e-5,
+    #     'num_queries': args['chunk_size'],
+    #     'kl_weight': 0.0,
+    #     'hidden_dim': args['hidden_dim'],
+    #     'dim_feedforward': args['dim_feedforward'],
+    #     'lr_backbone': 1e-5,
+    #     'backbone': 'resnet18',
+    #     'enc_layers': 4,
+    #     'dec_layers': 7,
+    #     'nheads': 8,
+    #     'camera_names': camera_names
+    # }
+    #
+    # policy, stats = load_policy_and_stats(policy_config, checkpoint)
 
-    state_dim = 14
-    policy_config = {'lr': 1e-5,
-                     'num_queries': args['chunk_size'],
-                     'kl_weight': 0.0,
-                     'hidden_dim': args['hidden_dim'],
-                     'dim_feedforward': args['dim_feedforward'],
-                     'lr_backbone': 1e-5,
-                     'backbone': 'resnet18',
-                     'enc_layers': 4,
-                     'dec_layers': 7,
-                     'nheads': 8,
-                     'camera_names': camera_names,
-                     }
+    grasp_battery = build_primitive(PRIMITIVES['grasp_battery'])
+    move_to_start = build_primitive(PRIMITIVES['move_arms_to_start_pose'])
 
     while True:
 
@@ -53,15 +60,18 @@ def main(args):
         initial_state = env.reset()
 
         # execute first policy
-        task = TASK_CONFIGS['grasp_battery']
-        policy, stats = load_policy_and_stats(policy_config, '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt')
         wait_for_start(master_bot_left, master_bot_right, human_takeover=False)
-        qpos_history, image_list, qpos_list, target_qpos_list, rewards, last_state = \
-            execute_policy_on_env(policy, env, initial_state, task['episode_len'], state_dim, stats, camera_names,
-                                  master_bot_left=master_bot_left, master_bot_right=master_bot_right)
+
+        state, actions, timings = grasp_battery.execute(env, [initial_state], [], [], master_bot_left, master_bot_right)
+
+        # move arm back to start pos
+        state, actions, timings = move_to_start.execute(env, state, actions, timings, master_bot_left, master_bot_right)
+
+        # wait for start capture
         wait_for_start(master_bot_left, master_bot_right)
-        is_healthy = capture_one_episode(last_state, DT, max_timesteps, camera_names, dataset_dir, dataset_name, overwrite,
-                                         master_bot_left, master_bot_right, env)
+
+        is_healthy = capture_one_episode(state[-1], DT, max_timesteps, camera_names, dataset_dir, dataset_name,
+                                         overwrite, master_bot_left, master_bot_right, env)
         if is_healthy and args['episode_idx'] is not None:
             break
         reboot = args['reboot_every_episode']
@@ -69,14 +79,17 @@ def main(args):
 
 if __name__ == '__main__':
     import sys
+
     parser = argparse.ArgumentParser()
+    parser.add_argument('--capture', action='store_true', default=False)
     parser.add_argument('--task_name', action='store', type=str, help='Task name.', required=True)
     parser.add_argument('--episode_idx', action='store', type=int, help='Episode index.', default=None, required=False)
-    parser.add_argument('--reboot_every_episode', action='store_true', help='Episode index.', default=False, required=False)
+    parser.add_argument('--reboot_every_episode', action='store_true', help='Episode index.', default=False,
+                        required=False)
     parser.add_argument('--current_limit', type=int, help='gripper current limit', default=300, required=False)
-    parser.add_argument('--hidden_dim', type=int, default=512)
-    parser.add_argument('--chunk_size', type=int, default=100)
-    parser.add_argument('--dim_feedforward', type=int, default=3200)
+    # parser.add_argument('--hidden_dim', type=int, default=512)
+    # parser.add_argument('--chunk_size', type=int, default=100)
+    # parser.add_argument('--dim_feedforward', type=int, default=3200)
 
     # dummy argument to make DETR happy
     parser.add_argument('--policy_class', type=str, default='ACT')

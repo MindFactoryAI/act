@@ -390,7 +390,7 @@ def getch():
     return char
 
 
-def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, stats, camera_names,
+def execute_policy_on_env(policy, env, states, actions, actual_dt_history, max_timesteps, state_dim, stats, camera_names,
                           pre_process=None, post_process=None, num_queries=100, query_frequency=20,
                           master_bot_left=None, master_bot_right=None):
 
@@ -401,21 +401,16 @@ def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, 
 
     all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
     qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
-    image_list = []  # for visualization
-    qpos_list = []
-    target_qpos_list = []
-    rewards = []
-    state = initial_state
 
     with torch.inference_mode():
         for t in range(max_timesteps):
 
+            t0 = time.time()
+
             ### process previous timestep to get qpos and image_list
+            state = states[-1]
             obs = state.observation
-            if 'images' in obs:
-                image_list.append(obs['images'])
-            else:
-                image_list.append({'main': obs['image']})
+
             qpos_numpy = np.array(obs['qpos'])
             qpos = pre_process(qpos_numpy)
             qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
@@ -427,7 +422,7 @@ def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, 
 
             all_time_actions[[t], t:t + num_queries] = all_actions
             actions_for_curr_step = all_time_actions[:, t]
-            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+            actions_populated = torch.all(actions_for_curr_step != 0, dim=1)
             actions_for_curr_step = actions_for_curr_step[actions_populated]
             k = 0.01
             exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
@@ -441,7 +436,14 @@ def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, 
             target_qpos = action
 
             ### step the environment
+            t1 = time.time()
             state = env.step(target_qpos)
+            t2 = time.time()
+
+            states.append(state)
+            actions.append(target_qpos)
+            actual_dt_history.append([t0, t1, t2])
+
             if master_bot_left and master_bot_right:
                 state_len = int(len(action) / 2)
                 left_action = action[:state_len]
@@ -457,12 +459,7 @@ def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, 
                 joint_single_command.cmd = MASTER_GRIPPER_JOINT_UNNORMALIZE_FN(right_action[-1])
                 master_bot_right.gripper.core.pub_single.publish(joint_single_command)
 
-            ### for visualization
-            qpos_list.append(qpos_numpy)
-            target_qpos_list.append(target_qpos)
-            rewards.append(state.reward)
-
-        return qpos_history, image_list, qpos_list, target_qpos_list, rewards, state
+        return states, actions, actual_dt_history
 
 
 def load_policy_and_stats(policy_config, ckpt_path, policy_class='ACT'):
@@ -528,14 +525,19 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
         elif 'sim_insertion' in task_name:
             BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
 
-        ts = env.reset()
+        initial_state = env.reset()
 
-        # print("press any key to continue, q to quit")
-        # char = getch()
-        # if char == 'q':
-        #     exit()
+        print("press any key to continue, q to quit")
+        char = getch()
+        if char == 'q':
+            exit()
 
-        qpos_history, image_list, qpos_list, target_qpos_list, rewards, last_state = execute_policy_on_env(policy, env, ts, max_timesteps, state_dim, stats, camera_names, query_frequency=query_frequency, num_queries=num_queries)
+        states, actions, timings = [initial_state], [], []
+        states, actions, timings = execute_policy_on_env(policy, env, states, actions, timings, max_timesteps,
+                                                         state_dim, stats, camera_names, query_frequency=query_frequency, num_queries=num_queries)
+
+        rewards = [s.reward for s in states]
+        image_list = [s.observation['images'] for s in states]
 
         if real_robot:
             move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
@@ -562,6 +564,7 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
         episode_returns.append(episode_return)
         episode_highest_reward = np.max(rewards)
         highest_rewards.append(episode_highest_reward)
+
         print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
 
         if save_episode:
