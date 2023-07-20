@@ -23,7 +23,7 @@ from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 from constants import MASTER_GRIPPER_JOINT_UNNORMALIZE_FN
 from interbotix_xs_msgs.msg import JointSingleCommand
-
+from robot_utils import torque_on
 from sim_env import BOX_POSE
 
 
@@ -401,6 +401,10 @@ def execute_policy_on_env(policy, env, states, actions, actual_dt_history, max_t
 
     all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
     qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
+
+    if master_bot_left and master_bot_right:
+        torque_on(master_bot_left)
+        torque_on(master_bot_right)
 
     with torch.inference_mode():
         for t in range(max_timesteps):

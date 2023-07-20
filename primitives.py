@@ -22,6 +22,17 @@ PRIMITIVES = {
             "move_time": 1.0,
         }
     },
+
+    "move_arms_to_grasp_battery_start_pose": {
+        "module_name": "primitives",
+        "object_name": "LinearMoveToStartPose",
+        "args": [],
+        "kwargs": {
+            "task_name": "grasp_battery",
+            "move_time": 1.0,
+        }
+    },
+
     "grasp_battery": {
         "module_name": "primitives",
         "object_name": "ACTPrimitive",
@@ -34,6 +45,17 @@ PRIMITIVES = {
             'dim_feedforward': 3200
         }
     },
+
+    "move_arms_to_drop_battery_in_slot_start_pose": {
+        "module_name": "primitives",
+        "object_name": "LinearMoveToStartPose",
+        "args": [],
+        "kwargs": {
+            "task_name": "drop_battery_in_slot_only",
+            "move_time": 1.0,
+        }
+    },
+
     "capture_drop_battery_in_slot_only": {
         "module_name": "primitives",
         "object_name": "Capture",
@@ -58,6 +80,17 @@ def lerp_trajectory(bot, target_pose, num_steps):
 
 def get_gripper_position_normalized(master_bot):
     return MASTER_GRIPPER_JOINT_NORMALIZE_FN(master_bot.dxl.joint_states.position[6])
+
+
+class LinearMoveToStartPose:
+    def __init__(self, task_name, move_time):
+        task = TASK_CONFIGS[task_name]
+        target_pose_left = task['start_left_arm_pose']
+        target_pose_right = task['start_right_arm_pose']
+        self.linear_move_arms = LinearMoveArms(target_pose_left, target_pose_right, move_time)
+
+    def execute(self, env, states, actions, timings, master_bot_left=None, master_bot_right=None):
+        return self.linear_move_arms.execute(env, states, actions, timings, master_bot_left, master_bot_right)
 
 
 class LinearMoveArms:
@@ -161,7 +194,7 @@ class Capture:
         assert len(states) >= 1, "Please ensure there is at least an initial state provided to start a recording"
         start_pos_states, start_pos_actions = len(states), len(actions)
 
-        wait_for_start(master_bot_left, master_bot_right)
+        wait_for_start(env, master_bot_left, master_bot_right)
 
         timesteps, actions, actual_dt_history = \
             teleoperate(states, actions, timings, self.task['episode_len'], env, master_bot_left, master_bot_right)
