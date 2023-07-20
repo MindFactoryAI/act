@@ -9,7 +9,8 @@ if __name__ == '__main__':
     parser.add_argument('checkpoint_dir')
     args = parser.parse_args()
 
-    checkpoints = list(Path(args.checkpoint_dir).glob('*/*/*.ckpt'))
+    checkpoints = []
+    checkpoints += list(Path(args.checkpoint_dir).glob('*/*/*.ckpt'))
     checkpoints += list(Path(args.checkpoint_dir).glob('*.ckpt'))
 
     table = Table(show_header=True, header_style="bold magenta")
