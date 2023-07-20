@@ -63,7 +63,20 @@ PRIMITIVES = {
         "kwargs": {
             "task_name": "drop_battery_in_slot_only",
         }
-    }
+    },
+
+    "drop_battery_in_slot_only": {
+        "module_name": "primitives",
+        "object_name": "ACTPrimitive",
+        "args": [],
+        "kwargs": {
+            'task_name': 'drop_battery_in_slot_only',
+            'checkpoint': '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt',
+            'chunk_size': 100,
+            'hidden_dim': 512,
+            'dim_feedforward': 3200
+        }
+    },
 }
 
 

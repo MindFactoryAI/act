@@ -13,6 +13,12 @@ ROUTINES = {
         PRIMITIVES['grasp_battery'],
         PRIMITIVES['move_arms_to_drop_battery_in_slot_start_pose'],
         PRIMITIVES['capture_drop_battery_in_slot_only']
+    ],
+    'drop_battery_in_slot': [
+        PRIMITIVES['move_arms_to_grasp_battery_start_pose'],
+        PRIMITIVES['grasp_battery'],
+        PRIMITIVES['move_arms_to_drop_battery_in_slot_start_pose'],
+        PRIMITIVES['drop_battery_in_slot_only']
     ]
 }
 
