@@ -1,10 +1,8 @@
 import argparse
-from aloha_scripts.constants import DT, TASK_CONFIGS, START_ARM_POSE
-from aloha_scripts.record_episodes import get_auto_index, capture_one_episode, opening_ceremony, wait_for_input
-from aloha_scripts.robot_utils import move_arms
+from aloha_scripts.constants import START_ARM_POSE
+from aloha_scripts.record_episodes import opening_ceremony, wait_for_input
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
-from real_env import make_real_env, get_action
-from imitate_episodes import execute_policy_on_env, load_policy_and_stats
+from real_env import make_real_env
 from primitives import LinearMoveToStartPose, ACTPrimitive, Capture
 
 ROUTINES = {
