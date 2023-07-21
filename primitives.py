@@ -141,15 +141,6 @@ class Capture:
         self.task = TASK_CONFIGS[task_name]
         self.dataset_dir = self.task['dataset_dir']
         assert Path(self.dataset_dir).exists(), f"dataset_dir: {self.dataset_dir} does not exist"
-        if episode_index is not None:
-            episode_idx = episode_index
-            overwrite = True
-        else:
-            episode_idx = get_auto_index(self.dataset_dir)
-            overwrite = False
-        self.dataset_name = f'episode_{episode_idx}'
-        self.dataset_path = validate_dataset(self.dataset_dir, self.dataset_name, overwrite)
-        print(self.dataset_name + '\n')
 
     def execute(self, env, states, actions, timings, master_bot_left, master_bot_right):
         assert len(states) >= 1, "Please ensure there is at least an initial state provided to start a recording"
@@ -179,9 +170,14 @@ class Capture:
         handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any')
 
         if RIGHT_HANDLE_CLOSED(handle_state):
+            episode_idx = get_auto_index(self.dataset_dir)
+            dataset_name = f'episode_{episode_idx}'
+            dataset_path = validate_dataset(self.dataset_dir, dataset_name, overwrite=False)
+            print(dataset_name + '\n')
+
             # the initial state is at start_pos_state - 1, the first action taken is at start_pos_actions
             save_states, save_actions = states[start_pos_states-1:], actions[start_pos_actions:]
-            did_save = save_episode(self.dataset_path, self.task['camera_names'], self.task['episode_len'], save_states, save_actions)
+            did_save = save_episode(dataset_path, self.task['camera_names'], self.task['episode_len'], save_states, save_actions)
 
         return timesteps, actions, actual_dt_history, True
 
