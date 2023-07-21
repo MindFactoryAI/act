@@ -30,6 +30,11 @@ ROUTINES = {
         LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
         Capture('push_battery_in_slot')
     ],
+    'record_push_battery_in_slot_only': [
+        LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
+        Capture('push_battery_in_slot')
+    ],
+
 }
 
 
