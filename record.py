@@ -1,25 +1,35 @@
 import argparse
 from aloha_scripts.constants import DT, TASK_CONFIGS, START_ARM_POSE
-from aloha_scripts.record_episodes import get_auto_index, capture_one_episode, opening_ceremony, wait_for_start
+from aloha_scripts.record_episodes import get_auto_index, capture_one_episode, opening_ceremony, wait_for_input
 from aloha_scripts.robot_utils import move_arms
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 from real_env import make_real_env, get_action
 from imitate_episodes import execute_policy_on_env, load_policy_and_stats
-from primitives import build_primitive, PRIMITIVES
+from primitives import LinearMoveToStartPose, ACTPrimitive, Capture
 
 ROUTINES = {
     'record_drop_battery_in_slot_only': [
-        PRIMITIVES['move_arms_to_grasp_battery_start_pose'],
-        PRIMITIVES['grasp_battery'],
-        PRIMITIVES['move_arms_to_drop_battery_in_slot_start_pose'],
-        PRIMITIVES['capture_drop_battery_in_slot_only']
+        LinearMoveToStartPose('grasp_battery', move_time=1.0),
+        ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
+        LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
+        Capture('drop_battery_in_slot_only')
     ],
     'drop_battery_in_slot': [
-        PRIMITIVES['move_arms_to_grasp_battery_start_pose'],
-        PRIMITIVES['grasp_battery'],
-        PRIMITIVES['move_arms_to_drop_battery_in_slot_start_pose'],
-        PRIMITIVES['drop_battery_in_slot_only']
-    ]
+        LinearMoveToStartPose('grasp_battery', move_time=1.0),
+        ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
+        LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
+        ACTPrimitive('drop_battery_in_slot_only', '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt')
+    ],
+    'record_push_battery_in_slot': [
+        LinearMoveToStartPose('grasp_battery', move_time=1.0),
+        ACTPrimitive('grasp_battery',
+                     '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
+        LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
+        ACTPrimitive('drop_battery_in_slot_only',
+                     '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
+        LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
+        Capture('push_battery_in_slot')
+    ],
 }
 
 
@@ -34,7 +44,13 @@ def main(args):
 
     reboot = True  # always reboot on the first episode
 
-    sequence = [build_primitive(primitive) for primitive in ROUTINES[args.routine_name]]
+    sequence = ROUTINES[args.routine_name]
+
+    for primitive in sequence:
+        if hasattr(primitive, "evaluate"):
+            primitive.evaluate = True
+
+    policy_index = []
 
     while True:
 
@@ -43,7 +59,7 @@ def main(args):
 
         initial_state = env.reset()
 
-        wait_for_start(env, master_bot_left, master_bot_right)
+        wait_for_input(env, master_bot_left, master_bot_right)
 
         """ 
         format of capture buffer is
@@ -54,12 +70,15 @@ def main(args):
         s3 in this example is the terminal state and has no action associated with it
         
         each primitive run on the robot will append it's transitions to the capture buffer
-        mark and slice the buffer accordingly to recover segments
+        policy index maps actions to the policy in the sequence
         """
         states, actions, timings = [initial_state], [], []
 
-        for policy in sequence:
-            states, actions, timings = policy.execute(env, states, actions, timings,  master_bot_left, master_bot_right)
+        for i, policy in enumerate(sequence):
+            states, actions, timings, done = policy.execute(env, states, actions, timings,  master_bot_left, master_bot_right)
+            policy_index += [i] * len(actions)
+            if done:
+                break
 
         reboot = args.reboot_every_episode
 

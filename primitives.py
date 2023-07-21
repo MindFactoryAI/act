@@ -1,89 +1,13 @@
-from imitate_episodes import execute_policy_on_env, load_policy_and_stats
+from imitate_episodes import execute_policy_on_env, load_policy_and_stats, CheckPointInfo
 from aloha_scripts.constants import TASK_CONFIGS, DT, MASTER_GRIPPER_JOINT_NORMALIZE_FN, PUPPET_GRIPPER_POSITION_CLOSE, \
     PUPPET_GRIPPER_JOINT_OPEN
+from record_episodes import LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN
 from aloha_scripts.robot_utils import get_arm_joint_positions, get_arm_gripper_positions, move_grippers, torque_on
-from aloha_scripts.record_episodes import validate_dataset, teleoperate, print_dt_diagnosis, wait_for_start, \
+from aloha_scripts.record_episodes import validate_dataset, teleoperate, print_dt_diagnosis, wait_for_input, \
     save_episode, get_auto_index
 from pathlib import Path
 import time
 import numpy as np
-
-
-PRIMITIVES = {
-    "move_arms_to_start_pose": {
-        "module_name": "primitives",
-        "object_name": "LinearMoveArms",
-        "args": [],
-        "kwargs": {
-            "target_pose_left": [0.2208932340145111, -0.37889325618743896, 1.2686021327972412,
-                                 0.44025251269340515, -0.6135923266410828, -0.2178252786397934],
-            "target_pose_right": [-0.14726215600967407, -0.5599030256271362, 1.3023496866226196,
-                                  -0.058291271328926086, -0.3436117172241211, 0.02147573232650757],
-            "move_time": 1.0,
-        }
-    },
-
-    "move_arms_to_grasp_battery_start_pose": {
-        "module_name": "primitives",
-        "object_name": "LinearMoveToStartPose",
-        "args": [],
-        "kwargs": {
-            "task_name": "grasp_battery",
-            "move_time": 1.0,
-        }
-    },
-
-    "grasp_battery": {
-        "module_name": "primitives",
-        "object_name": "ACTPrimitive",
-        "args": [],
-        "kwargs": {
-            'task_name': 'grasp_battery',
-            'checkpoint': '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt',
-            'chunk_size': 100,
-            'hidden_dim': 512,
-            'dim_feedforward': 3200
-        }
-    },
-
-    "move_arms_to_drop_battery_in_slot_start_pose": {
-        "module_name": "primitives",
-        "object_name": "LinearMoveToStartPose",
-        "args": [],
-        "kwargs": {
-            "task_name": "drop_battery_in_slot_only",
-            "move_time": 1.0,
-        }
-    },
-
-    "capture_drop_battery_in_slot_only": {
-        "module_name": "primitives",
-        "object_name": "Capture",
-        "args": [],
-        "kwargs": {
-            "task_name": "drop_battery_in_slot_only",
-        }
-    },
-
-    "drop_battery_in_slot_only": {
-        "module_name": "primitives",
-        "object_name": "ACTPrimitive",
-        "args": [],
-        "kwargs": {
-            'task_name': 'drop_battery_in_slot_only',
-            'checkpoint': '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt',
-            'chunk_size': 100,
-            'hidden_dim': 512,
-            'dim_feedforward': 3200
-        }
-    },
-}
-
-
-def build_primitive(definition):
-    module = __import__(definition['module_name'])
-    class_ = getattr(module, definition['object_name'])
-    return class_(*definition['args'], **definition['kwargs'])
 
 
 def lerp_trajectory(bot, target_pose, num_steps):
@@ -156,16 +80,18 @@ class LinearMoveArms:
             if master_bot_right:
                 master_bot_right.arm.set_joint_positions(master_right_traj[t], blocking=False)
             time.sleep(DT)
-        return states, actions, timings
+        return states, actions, timings, False
 
 
 class ACTPrimitive:
-    def __init__(self, task_name, checkpoint, chunk_size, hidden_dim, dim_feedforward):
+    def __init__(self, task_name, checkpoint_path, chunk_size=100, hidden_dim=512, dim_feedforward=3200):
         self.task_name = task_name
+        self.checkpoint_path = checkpoint_path
         self.task = TASK_CONFIGS[task_name]
         self.camera_names = self.task['camera_names']
         self.state_dim = 14
-        policy_config = {
+        self.evaluate = False
+        self.policy_config = {
             'lr': 1e-5,
             'num_queries': chunk_size,
             'kl_weight': 0.0,
@@ -178,15 +104,37 @@ class ACTPrimitive:
             'nheads': 8,
             'camera_names': self.camera_names
         }
-        self.policy, self.stats = load_policy_and_stats(policy_config, checkpoint)
+        self.policy, self.stats = None, None
 
     def execute(self, env, states, actions, timings, master_bot_left=None, master_bot_right=None):
         assert len(states) >= 1, "Please ensure there is at least an initial state provided to start the policy"
+        if self.policy is None:
+            self.policy, self.stats = load_policy_and_stats(self.policy_config, self.checkpoint_path)
         states, actions, timings = \
             execute_policy_on_env(self.policy, env, states, actions, timings, self.task['episode_len'], self.state_dim, self.stats, self.camera_names,
                                   master_bot_left=master_bot_left, master_bot_right=master_bot_right)
-        return states, actions, timings
 
+        done = False
+        if self.evaluate:
+            checkpoint_info = CheckPointInfo.load(self.checkpoint_path)
+            print("close left handle for fail, close right handle for pass, open left for scratch, open right for quit")
+            handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until="any")
+            if LEFT_HANDLE_CLOSED(handle_state):
+                print("FAIL")
+                checkpoint_info.values['trials'].append(0)
+                checkpoint_info.update()
+                done = True
+            if RIGHT_HANDLE_CLOSED(handle_state):
+                print("PASS")
+                checkpoint_info.values['trials'].append(1)
+                checkpoint_info.update()
+            if LEFT_HANDLE_OPEN(handle_state):
+                print("SCRATCH")
+                done = True
+            if RIGHT_HANDLE_OPEN(handle_state):
+                exit()
+
+        return states, actions, timings, done
 
 class Capture:
     def __init__(self, task_name, episode_index=None):
@@ -207,7 +155,7 @@ class Capture:
         assert len(states) >= 1, "Please ensure there is at least an initial state provided to start a recording"
         start_pos_states, start_pos_actions = len(states), len(actions)
 
-        wait_for_start(env, master_bot_left, master_bot_right)
+        wait_for_input(env, master_bot_left, master_bot_right)
 
         timesteps, actions, actual_dt_history = \
             teleoperate(states, actions, timings, self.task['episode_len'], env, master_bot_left, master_bot_right)
@@ -227,9 +175,13 @@ class Capture:
         if freq_mean < 42:
             raise Exception("Frequency Mean less than 42, robot capture is too slow")
 
-        # the initial state is at start_pos_state - 1, the first action taken is at start_pos_actions
-        save_states, save_actions = states[start_pos_states-1:], actions[start_pos_actions:]
-        did_save = save_episode(self.dataset_path, self.task['camera_names'], self.task['episode_len'], save_states, save_actions)
+        print("right_close for save, left_close for discard")
+        handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any')
 
-        return timesteps, actions, actual_dt_history
+        if RIGHT_HANDLE_CLOSED(handle_state):
+            # the initial state is at start_pos_state - 1, the first action taken is at start_pos_actions
+            save_states, save_actions = states[start_pos_states-1:], actions[start_pos_actions:]
+            did_save = save_episode(self.dataset_path, self.task['camera_names'], self.task['episode_len'], save_states, save_actions)
+
+        return timesteps, actions, actual_dt_history, True
 
