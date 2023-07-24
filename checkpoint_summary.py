@@ -3,6 +3,7 @@ from rich.table import Table
 from rich.console import Console
 from argparse import ArgumentParser
 from checkpoint import CheckPointInfo
+from tqdm import tqdm
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -22,7 +23,7 @@ if __name__ == '__main__':
     table.add_column("Trials", style="red")
     table.add_column("Rate")
 
-    for checkpoint in checkpoints:
+    for checkpoint in tqdm(checkpoints):
         ckpt_info = CheckPointInfo.load(checkpoint)
         if ckpt_info.trials_n > 0:
             table.add_row(
@@ -35,5 +36,5 @@ if __name__ == '__main__':
                 f'{ckpt_info.success_rate}',
             )
 
-    console = Console(width=120)
+    console = Console(width=180)
     console.print(table)
