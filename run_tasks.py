@@ -2,12 +2,12 @@ import argparse
 from pathlib import Path
 
 from aloha_scripts.constants import START_ARM_POSE, TASK_CONFIGS
-from aloha_scripts.record_episodes import opening_ceremony, wait_for_input, get_auto_index, save_episode, validate_dataset
+from aloha_scripts.record_episodes import opening_ceremony, get_auto_index, save_episode, validate_dataset
+from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN
 from checkpoint import CheckPointInfo
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 from real_env import make_real_env
 from primitives import LinearMoveToStartPose, ACTPrimitive, Capture
-from record_episodes import LEFT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_CLOSED, RIGHT_HANDLE_OPEN
 
 ROUTINES = {
     'record_drop_battery_in_slot_only': [
@@ -143,7 +143,7 @@ def main(args):
 
             if isinstance(policy, Capture):
                 handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any',
-                                              message="right_close for save, left_close for save failed, left_open for discard")
+                                              message="right_close for save, left close for discard")
 
                 if RIGHT_HANDLE_CLOSED(handle_state):
                     print("Saving PASS")
