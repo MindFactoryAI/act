@@ -3,7 +3,8 @@ from checkpoint import CheckPointInfo
 from aloha_scripts.constants import TASK_CONFIGS, DT, MASTER_GRIPPER_JOINT_NORMALIZE_FN, PUPPET_GRIPPER_POSITION_CLOSE, \
     PUPPET_GRIPPER_JOINT_OPEN
 from aloha_scripts.robot_utils import get_arm_joint_positions, get_arm_gripper_positions, move_grippers, torque_on
-from aloha_scripts.record_episodes import teleoperate, print_dt_diagnosis, save_episode, get_auto_index
+from aloha_scripts.record_episodes import teleoperate, print_dt_diagnosis
+from data_utils import save_episode, get_auto_index
 from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN
 from pathlib import Path
 import time
