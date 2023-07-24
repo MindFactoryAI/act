@@ -2,7 +2,7 @@ from pathlib import Path
 from rich.table import Table
 from rich.console import Console
 from argparse import ArgumentParser
-from imitate_episodes import CheckPointInfo
+from checkpoint import CheckPointInfo
 
 if __name__ == '__main__':
     parser = ArgumentParser()

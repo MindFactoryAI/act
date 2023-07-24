@@ -10,9 +10,9 @@ import sys
 import tty
 import termios
 from pathlib import Path
-import json
 
 import wandb
+from checkpoint import CheckPointInfo, get_resume_checkpoint, list_checkpoints
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
@@ -43,44 +43,6 @@ def trajectory_similarity(l1_dist, policy_actions, expert_dist):
     tsi = l1_dist + kl_div
 
     return tsi
-
-
-def best_checkpoint(checkpoint_dir, n=0):
-    """
-    checkpoint dir: directory to find checkpoints
-    n: 0 returns best, 1, returns 2nd best, etc
-    """
-    checkpoints = list_checkpoints(checkpoint_dir)
-    if len(checkpoints) > 0:
-        return str(checkpoints[n])
-
-    policy_best = Path(checkpoint_dir)/Path('policy_best.ckpt')
-    if policy_best.exists():
-        return str(policy_best)
-
-    return None
-
-
-def find_checkpoint(ckpt_dir):
-    checkpoints = list(Path(ckpt_dir).glob('*.ckpt'))
-    for ckpt in checkpoints:
-        if ckpt.name == 'policy_last.ckpt':
-            return str(ckpt)
-
-    policy_best = best_checkpoint(ckpt_dir, 0)
-    if policy_best is not None:
-        return policy_best
-
-    else:
-        print(f"No checkpoints found in {ckpt_dir}")
-        exit(1)
-
-
-def list_checkpoints(checkpoint_dir, prefix=None):
-    if prefix is None:
-        return sorted(list(Path(checkpoint_dir).glob('*.ckpt')))
-    else:
-        return sorted(list(Path(checkpoint_dir).glob(f'{prefix}*.ckpt')))
 
 
 def save_best_checkpoints(checkpoint_dir, run,
@@ -144,85 +106,6 @@ def save_best_checkpoints(checkpoint_dir, run,
         }, f'{checkpoint_dir}/policy_best_inv_learning_error_{inv_learning_error:.5f}.ckpt')
 
     return min_val_loss, min_inv_learning_error
-
-
-class CheckPointInfo(object):
-    def __init__(self, ckpt_path, values):
-        self.ckpt_path = ckpt_path
-        self.values = values
-
-    @property
-    def epoch(self):
-        if 'epoch' in self.values:
-            return self.values['epoch']
-        else:
-            return 0
-
-    @property
-    def val_loss(self):
-        return self.values['val_loss']
-
-    @property
-    def train_loss(self):
-        return self.values['train_loss']
-
-    @property
-    def sidecar(self):
-        return Path(f'{str(Path(self.ckpt_path))}.data')
-
-    @staticmethod
-    def load(ckpt_path):
-        checkpoint = Path(ckpt_path)
-        if not checkpoint.exists():
-            raise Exception(f'File {checkpoint} not found')
-
-        sidecar = Path(f'{str(Path(ckpt_path))}.data')
-
-        if not sidecar.exists():
-            values = {
-                'trials': [],
-            }
-            with open(sidecar, 'w') as file:
-                json.dump(values, file)
-        else:
-            with open(sidecar, 'r') as file:
-                values = json.load(file)
-
-        ckpt_info = CheckPointInfo(ckpt_path, values)
-
-        if 'val_loss' not in ckpt_info.values:
-            try:
-                checkpoint = torch.load(ckpt_path)
-                for key in ['val_loss', 'train_loss', 'epoch']:
-                    if key in checkpoint:
-                        if isinstance(checkpoint[key], torch.Tensor):
-                            value = checkpoint[key].item()
-                        else:
-                            value = str(checkpoint[key])
-                        ckpt_info.values[key] = value
-                    else:  # its the old format, so kludge it and move on
-                        ckpt_info.values['val_loss'] = 10.
-                ckpt_info.update()
-            except RuntimeError:
-                print(f'{ckpt_path} could not be loaded - the file is probably corrupt, delete it')
-
-        return ckpt_info
-
-    def update(self):
-        with open(self.sidecar, 'w') as file:
-            json.dump(self.values, file)
-
-    @property
-    def trials_n(self):
-        return len(self.values['trials'])
-
-    @property
-    def successes(self):
-        return sum(self.values['trials'])
-
-    @property
-    def success_rate(self):
-        return self.successes / self.trials_n
 
 
 def is_sim(task_name):
@@ -390,7 +273,7 @@ def getch():
     return char
 
 
-def execute_policy_on_env(policy, env, states, actions, actual_dt_history, max_timesteps, state_dim, stats, camera_names,
+def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, stats, camera_names,
                           pre_process=None, post_process=None, num_queries=100, query_frequency=20,
                           master_bot_left=None, master_bot_right=None):
 
@@ -402,6 +285,11 @@ def execute_policy_on_env(policy, env, states, actions, actual_dt_history, max_t
     all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
     qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
 
+    states = []
+    actions = []
+    actual_dt_history = []
+    state = initial_state
+
     if master_bot_left and master_bot_right:
         torque_on(master_bot_left)
         torque_on(master_bot_right)
@@ -412,7 +300,6 @@ def execute_policy_on_env(policy, env, states, actions, actual_dt_history, max_t
             t0 = time.time()
 
             ### process previous timestep to get qpos and image_list
-            state = states[-1]
             obs = state.observation
 
             qpos_numpy = np.array(obs['qpos'])
@@ -439,14 +326,17 @@ def execute_policy_on_env(policy, env, states, actions, actual_dt_history, max_t
             action = post_process(raw_action)
             target_qpos = action
 
-            ### step the environment
-            t1 = time.time()
-            state = env.step(target_qpos)
-            t2 = time.time()
-
+            # save state, action pair
             states.append(state)
             actions.append(target_qpos)
+
+            ### step the environment
+            t1 = time.time()
+            next_state = env.step(target_qpos)
+            t2 = time.time()
+
             actual_dt_history.append([t0, t1, t2])
+            state = next_state
 
             if master_bot_left and master_bot_right:
                 state_len = int(len(action) / 2)
@@ -463,7 +353,7 @@ def execute_policy_on_env(policy, env, states, actions, actual_dt_history, max_t
                 joint_single_command.cmd = MASTER_GRIPPER_JOINT_UNNORMALIZE_FN(right_action[-1])
                 master_bot_right.gripper.core.pub_single.publish(joint_single_command)
 
-        return states, actions, actual_dt_history
+        return states, actions, actual_dt_history, next_state
 
 
 def load_policy_and_stats(policy_config, ckpt_path, policy_class='ACT'):
@@ -536,9 +426,9 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
         if char == 'q':
             exit()
 
-        states, actions, timings = [initial_state], [], []
-        states, actions, timings = execute_policy_on_env(policy, env, states, actions, timings, max_timesteps,
-                                                         state_dim, stats, camera_names, query_frequency=query_frequency, num_queries=num_queries)
+        states, actions, timings, terminal_state = \
+            execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, stats, camera_names,
+                                  query_frequency=query_frequency, num_queries=num_queries)
 
         rewards = [s.reward for s in states]
         image_list = [s.observation['images'] for s in states]
@@ -627,7 +517,7 @@ def train_bc(config):
     optimizer = make_optimizer(policy_class, policy)
 
     if config['resume']:
-        ckpt_path = find_checkpoint(config['resume'])
+        ckpt_path = get_resume_checkpoint(config['resume'])
         print(f'resuming from {ckpt_path}')
         checkpoint = torch.load(ckpt_path)
         start_epoch = checkpoint['epoch']
