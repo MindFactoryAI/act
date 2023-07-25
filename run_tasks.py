@@ -15,12 +15,12 @@ import numpy as np
 
 ROUTINES = {
     'drop_battery_in_slot': {
-        'program': [
+        'sequence': [
             ACTPrimitive('grasp_battery'),
             ACTPrimitive('drop_battery_in_slot_only')
         ]},
     'push_battery_in_slot_only': {
-        'program': [
+        'sequence': [
             ACTPrimitive('push_battery_in_slot',
                          '/mnt/magneto/checkpoints/push_battery_in_slot/peach-disco-3/policy_best_inv_learning_error_0.05223.ckpt'
                          # '/mnt/magneto/checkpoints/push_battery_in_slot/peach-disco-3/policy_min_val_loss0.33072.ckpt'
@@ -28,7 +28,7 @@ ROUTINES = {
                          )
         ]},
     'slot_battery': {
-        'program': [
+        'sequence': [
             ACTPrimitive('grasp_battery',
                          '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
             ACTPrimitive('drop_battery_in_slot_only',
@@ -63,7 +63,8 @@ def main(args):
 
     reboot = True  # always reboot on the first episode
 
-    sequence = ROUTINES[args.routine_name]['program']
+    sequence = ROUTINES[args.routine_name]['sequence']
+
     if args.capture_mode == "ALL":
         capture_flags = [True] * len(sequence)
     elif args.capture_mode == "LAST":
@@ -74,17 +75,19 @@ def main(args):
         raise Exception('valid capture modes are ALL or LAST')
 
     plt.ion()
-    fig, ax = plt.subplots(1, 1, figsize=(8, 12), dpi=80)
-    ax_img = ax.imshow(np.zeros((640, 480)))
+    fig, ax = plt.subplots(1, len(sequence), figsize=(6 * len(sequence), 12), dpi=80)
+    ax_initial_state_img = []
+    for i in range(len(sequence)):
+        ax_initial_state_img.append(ax[i].imshow(np.zeros((640, 480))))
     fig.tight_layout()
     fig.canvas.draw()
     plt.draw()
     plt.pause(1)
 
-    def update_panel(episode_path):
+    def update_panel(sequence_i, episode_path):
         frame = Episode(f'{episode_path}.hdf5').get_frame(0, "RGB")
         cam_low = Episode(f'{episode_path}.hdf5').split_frame(frame)['cam_low']
-        ax_img.set_data(np.fliplr(cam_low.swapaxes(0, 1)))
+        ax_initial_state_img[sequence_i].set_data(np.fliplr(cam_low.swapaxes(0, 1)))
         plt.pause(1)
 
     while True:
@@ -135,7 +138,12 @@ def main(args):
                     print(dataset_name + '\n')
                     save_episode(episode_path, policy.task['camera_names'], policy.task['episode_len'], states, actions,
                                  terminal_state)
-                    update_panel(episode_path)
+                    update_panel(i, episode_path)
+
+                    # if we are in eval mode, then we got here due to a failure, so now we can proceed with the eval
+                    if args.capture_mode is None:
+                        capture_flags[i] = False
+
                 else:  # discard and end the trajectory
                     break
 
@@ -146,21 +154,37 @@ def main(args):
                 checkpoint_info = CheckPointInfo.load(policy.checkpoint_path)
                 if LEFT_HANDLE_CLOSED(handle_state):
                     print('FAIL')
+                    # capture fails against the checkpoint
                     episode_path = save_result(policy.task_name, policy.checkpoint_path, states, actions,
                                                terminal_state,
                                                reward=0, policy_info=policy_info)
+
+                    # record the result
                     checkpoint_info.values['trials'].append(0)
                     checkpoint_info.update()
-                    update_panel(episode_path)
+                    update_panel(i, episode_path)
+
+                    # lets capture a new example
+                    if args.capture_mode is None:
+                        capture_flags[i] = True
                     break
+
                 elif RIGHT_HANDLE_CLOSED(handle_state):
                     print('PASS')
-                    episode_path = save_result(policy.task_name, policy.checkpoint_path, states, actions,
-                                               terminal_state,
-                                               reward=1, policy_info=policy_info)
+
+                    # add episode to the dataset
+                    episode_idx = get_auto_index(policy.dataset_dir)
+                    dataset_name = f'episode_{episode_idx}'
+                    episode_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
+                    print(dataset_name + '\n')
+                    save_episode(episode_path, policy.task['camera_names'], policy.task['episode_len'], states, actions,
+                                 terminal_state)
+
+                    # record the result
                     checkpoint_info.values['trials'].append(1)
                     checkpoint_info.update()
-                    update_panel(episode_path)
+                    update_panel(i, episode_path)
+
                 elif LEFT_HANDLE_OPEN(handle_state):
                     print("SCRATCH")
                     break

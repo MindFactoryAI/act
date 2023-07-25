@@ -47,6 +47,9 @@ class ACTPrimitive:
         self.task = TASK_CONFIGS[task_name]
         self.target_pose_left = self.task['start_left_arm_pose']
         self.target_pose_right = self.task['start_right_arm_pose']
+        self.dataset_dir = self.task['dataset_dir']
+        self.episode_len = self.task['episode_len']
+
         if initial_move_time is not None:
             self.move_time = initial_move_time
         elif 'initial_move_time' in self.task:
@@ -140,11 +143,11 @@ class ACTPrimitive:
 
         return states, actions, timings, state
 
-    def capture(self, env, initial_state, master_bot_left, master_bot_right):
+    def capture(self, env, initial_state, master_bot_left, master_bot_right, open_grippers_after=False):
         wait_for_input(env, master_bot_left, master_bot_right)
 
         states, actions, timings = \
-            teleoperate([initial_state], [], [], self.task['episode_len'], env, master_bot_left, master_bot_right)
+            teleoperate([initial_state], [], [], self.episode_len, env, master_bot_left, master_bot_right)
         terminal_state = states[-1]
         states = states[:-1]
 
@@ -152,12 +155,12 @@ class ACTPrimitive:
         torque_on(master_bot_left)
         torque_on(master_bot_right)
 
-        # Open puppet grippers
-        env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "position")
-        env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "position")
-        move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)
-        env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
-        env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
+        if open_grippers_after:
+            env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "position")
+            env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "position")
+            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)
+            env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
+            env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
 
         freq_mean = print_dt_diagnosis(timings)
         if freq_mean < 42:
