@@ -15,10 +15,9 @@ CHECKPOINT_DIR = '/mnt/magneto/checkpoints'
 
 CANONICAL_CHECKPOINTS = {
     'grasp_battery': f'{CHECKPOINT_DIR}/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt',
-    'drop_battery_in_slot_only': f'{CHECKPOINT_DIR}/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt',
+    'drop_battery_in_slot_only': f'{CHECKPOINT_DIR}/drop_battery_in_slot_only/rare-serenity-3/policy_best_inv_learning_error_0.04715.ckpt',
     'push_battery_in_slot': f'{CHECKPOINT_DIR}/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt'
 }
-
 
 
 def lerp_trajectory(bot, target_pose, num_steps):
@@ -153,7 +152,6 @@ class ACTPrimitive:
         states, actions, timings, terminal_state = \
             execute_policy_on_env(self.policy, env, initial_state, self.task['episode_len'], self.state_dim, self.stats, self.camera_names,
                                   master_bot_left=master_bot_left, master_bot_right=master_bot_right)
-        done = False
 
         return states, actions, timings, terminal_state
 

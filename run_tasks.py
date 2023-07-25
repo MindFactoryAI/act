@@ -3,59 +3,68 @@ from pathlib import Path
 
 from aloha_scripts.constants import START_ARM_POSE, TASK_CONFIGS
 from aloha_scripts.record_episodes import opening_ceremony
-from data_utils import save_episode, validate_dataset, get_auto_index
+from data_utils import save_episode, validate_dataset, get_auto_index, Episode
 from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN
 from checkpoint import CheckPointInfo
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 from real_env import make_real_env
 from primitives import LinearMoveToStartPose, ACTPrimitive, Capture
+from matplotlib import pyplot as plt
+import numpy as np
 
 ROUTINES = {
-    'record_drop_battery_in_slot_only': [
-        LinearMoveToStartPose('grasp_battery', move_time=1.0),
-        ACTPrimitive('grasp_battery',
-                     '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
-        LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
-        Capture('drop_battery_in_slot_only')
-    ],
-    'drop_battery_in_slot': [
-        LinearMoveToStartPose('grasp_battery', move_time=1.0),
-        ACTPrimitive('grasp_battery',
-                     '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
-        LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
-        ACTPrimitive('drop_battery_in_slot_only',
-                     '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt')
-    ],
-    'record_push_battery_in_slot': [
-        LinearMoveToStartPose('grasp_battery', move_time=1.0),
-        ACTPrimitive('grasp_battery',
-                     '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
-        LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
-        ACTPrimitive('drop_battery_in_slot_only',
-                     '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
-        LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
-        Capture('push_battery_in_slot')
-    ],
-    'record_push_battery_in_slot_only': [
-        LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
-        Capture('push_battery_in_slot')
-    ],
-    'push_battery_in_slot_only': [
-        LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
-        ACTPrimitive('push_battery_in_slot',
-                     '/mnt/magneto/checkpoints/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt')
-    ],
-    'slot_battery': [
-        LinearMoveToStartPose('grasp_battery', move_time=1.0),
-        ACTPrimitive('grasp_battery',
-                     '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
-        LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
-        ACTPrimitive('drop_battery_in_slot_only',
-                     '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
-        LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
-        ACTPrimitive('push_battery_in_slot',
-                     '/mnt/magneto/checkpoints/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt')
-    ],
+    'record_drop_battery_in_slot_only': {
+        'program': [
+            LinearMoveToStartPose('grasp_battery', move_time=1.0),
+            ACTPrimitive('grasp_battery',
+                         '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
+            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
+            Capture('drop_battery_in_slot_only')
+        ]},
+    'drop_battery_in_slot': {
+        'program': [
+            LinearMoveToStartPose('grasp_battery', move_time=1.0),
+            ACTPrimitive('grasp_battery'),
+            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
+            ACTPrimitive('drop_battery_in_slot_only')
+        ]},
+    'record_push_battery_in_slot': {
+        'program': [
+            LinearMoveToStartPose('grasp_battery', move_time=1.0),
+            ACTPrimitive('grasp_battery',
+                         '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
+            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
+            ACTPrimitive('drop_battery_in_slot_only',
+                         '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
+            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
+            Capture('push_battery_in_slot')
+        ]},
+    'record_push_battery_in_slot_only': {
+        'program': [
+            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
+            Capture('push_battery_in_slot')
+        ]},
+    'push_battery_in_slot_only': {
+        'program': [
+            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
+            ACTPrimitive('push_battery_in_slot',
+                         '/mnt/magneto/checkpoints/push_battery_in_slot/peach-disco-3/policy_best_inv_learning_error_0.05223.ckpt'
+                         # '/mnt/magneto/checkpoints/push_battery_in_slot/peach-disco-3/policy_min_val_loss0.33072.ckpt'
+                         # '/mnt/magneto/checkpoints/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt'
+                         )
+        ]},
+    'slot_battery': {
+        'program': [
+            LinearMoveToStartPose('grasp_battery', move_time=1.0),
+            ACTPrimitive('grasp_battery',
+                         '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
+            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
+            ACTPrimitive('drop_battery_in_slot_only',
+                         '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
+            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
+            ACTPrimitive('push_battery_in_slot',
+                         '/mnt/magneto/checkpoints/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt')
+        ]},
 }
 
 
@@ -70,6 +79,7 @@ def save_result(task_name, checkpoint_path, states, actions, terminal_state, rew
     checkpoint_info.update()
     save_episode(dataset_filepath, task['camera_names'], task['episode_len'], states, actions,
                  terminal_state=terminal_state, result=reward, policy_info=policy_info)
+    return dataset_filepath
 
 
 def main(args):
@@ -82,7 +92,21 @@ def main(args):
 
     reboot = True  # always reboot on the first episode
 
-    sequence = ROUTINES[args.routine_name]
+    sequence = ROUTINES[args.routine_name]['program']
+
+    plt.ion()
+    fig, ax = plt.subplots(1, 1, figsize=(8, 12), dpi=80)
+    ax_img = ax.imshow(np.zeros((640, 480)))
+    fig.tight_layout()
+    fig.canvas.draw()
+    plt.draw()
+    plt.pause(1)
+
+    def update_panel(episode_path):
+        frame = Episode(f'{episode_path}.hdf5').get_frame(0, "RGB")
+        cam_low = Episode(f'{episode_path}.hdf5').split_frame(frame)['cam_low']
+        ax_img.set_data(np.fliplr(cam_low.swapaxes(0, 1)))
+        plt.pause(1)
 
     while True:
 
@@ -124,17 +148,21 @@ def main(args):
                 checkpoint_info = CheckPointInfo.load(policy.checkpoint_path)
                 if LEFT_HANDLE_CLOSED(handle_state):
                     print('FAIL')
-                    save_result(policy.task_name, policy.checkpoint_path, states, actions, terminal_state,
-                                reward=0, policy_info=policy_info)
+                    episode_path = save_result(policy.task_name, policy.checkpoint_path, states, actions,
+                                               terminal_state,
+                                               reward=0, policy_info=policy_info)
                     checkpoint_info.values['trials'].append(0)
                     checkpoint_info.update()
+                    update_panel(episode_path)
                     break
                 elif RIGHT_HANDLE_CLOSED(handle_state):
                     print('PASS')
-                    save_result(policy.task_name, policy.checkpoint_path, states, actions, terminal_state,
-                                reward=1, policy_info=policy_info)
+                    episode_path = save_result(policy.task_name, policy.checkpoint_path, states, actions,
+                                               terminal_state,
+                                               reward=1, policy_info=policy_info)
                     checkpoint_info.values['trials'].append(1)
                     checkpoint_info.update()
+                    update_panel(episode_path)
                 elif LEFT_HANDLE_OPEN(handle_state):
                     print("SCRATCH")
                     break
@@ -150,9 +178,11 @@ def main(args):
                     print("Saving PASS")
                     episode_idx = get_auto_index(policy.dataset_dir)
                     dataset_name = f'episode_{episode_idx}'
-                    dataset_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
+                    episode_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
                     print(dataset_name + '\n')
-                    save_episode(dataset_path, policy.task['camera_names'], policy.task['episode_len'], states, actions, terminal_state)
+                    save_episode(episode_path, policy.task['camera_names'], policy.task['episode_len'], states, actions,
+                                 terminal_state)
+                    update_panel(episode_path)
 
             initial_state = terminal_state
 
