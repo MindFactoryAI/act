@@ -71,6 +71,7 @@ def get_args_parser():
     parser.add_argument('--cutout_patch_size', type=int, default=300)
     parser.add_argument('--current_limit', type=int, help='gripper current limit', default=300, required=False)
     parser.add_argument('--routine_name', type=str, required=False)
+    parser.add_argument('--capture_mode', type=str, help='save trajectory as task', default=None, required=False)
     return parser
 
 

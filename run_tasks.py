@@ -8,45 +8,19 @@ from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED,
 from checkpoint import CheckPointInfo
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 from real_env import make_real_env
-from primitives import LinearMoveToStartPose, ACTPrimitive, Capture
+from primitives import ACTPrimitive
 from matplotlib import pyplot as plt
 import numpy as np
 
+
 ROUTINES = {
-    'record_drop_battery_in_slot_only': {
-        'program': [
-            LinearMoveToStartPose('grasp_battery', move_time=1.0),
-            ACTPrimitive('grasp_battery',
-                         '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
-            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
-            Capture('drop_battery_in_slot_only')
-        ]},
     'drop_battery_in_slot': {
         'program': [
-            LinearMoveToStartPose('grasp_battery', move_time=1.0),
             ACTPrimitive('grasp_battery'),
-            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
             ACTPrimitive('drop_battery_in_slot_only')
-        ]},
-    'record_push_battery_in_slot': {
-        'program': [
-            LinearMoveToStartPose('grasp_battery', move_time=1.0),
-            ACTPrimitive('grasp_battery',
-                         '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
-            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
-            ACTPrimitive('drop_battery_in_slot_only',
-                         '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
-            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
-            Capture('push_battery_in_slot')
-        ]},
-    'record_push_battery_in_slot_only': {
-        'program': [
-            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
-            Capture('push_battery_in_slot')
         ]},
     'push_battery_in_slot_only': {
         'program': [
-            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
             ACTPrimitive('push_battery_in_slot',
                          '/mnt/magneto/checkpoints/push_battery_in_slot/peach-disco-3/policy_best_inv_learning_error_0.05223.ckpt'
                          # '/mnt/magneto/checkpoints/push_battery_in_slot/peach-disco-3/policy_min_val_loss0.33072.ckpt'
@@ -55,13 +29,10 @@ ROUTINES = {
         ]},
     'slot_battery': {
         'program': [
-            LinearMoveToStartPose('grasp_battery', move_time=1.0),
             ACTPrimitive('grasp_battery',
                          '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt'),
-            LinearMoveToStartPose('drop_battery_in_slot_only', move_time=1.0),
             ACTPrimitive('drop_battery_in_slot_only',
                          '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
-            LinearMoveToStartPose('push_battery_in_slot', move_time=0.5),
             ACTPrimitive('push_battery_in_slot',
                          '/mnt/magneto/checkpoints/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt')
         ]},
@@ -93,6 +64,14 @@ def main(args):
     reboot = True  # always reboot on the first episode
 
     sequence = ROUTINES[args.routine_name]['program']
+    if args.capture_mode == "ALL":
+        capture_flags = [True] * len(sequence)
+    elif args.capture_mode == "LAST":
+        capture_flags = [False] * (len(sequence) - 1) + [True]
+    elif args.capture_mode is None:
+        capture_flags = [False] * len(sequence)
+    else:
+        raise Exception('valid capture modes are ALL or LAST')
 
     plt.ion()
     fig, ax = plt.subplots(1, 1, figsize=(8, 12), dpi=80)
@@ -131,17 +110,36 @@ def main(args):
         states_all, actions_all, timings_all, policy_index_all = [], [], [], []
         policy_info = []
 
-        for i, policy in enumerate(sequence):
-            states, actions, timings, terminal_state = policy.execute(env, initial_state, master_bot_left,
-                                                                      master_bot_right)
+        for i, (policy, capture) in enumerate(zip(sequence, capture_flags)):
+            states_i, actions_i, timings_i, terminal_state_i = policy.initial(env, initial_state, master_bot_left, master_bot_right)
+            if capture:
+                states, actions, timings, terminal_state = policy.capture(env, terminal_state_i, master_bot_left, master_bot_right)
+            else:
+                states, actions, timings, terminal_state = policy.execute(env, terminal_state_i, master_bot_left, master_bot_right)
 
-            states_all += states
-            actions_all += actions
-            timings_all += timings
-            policy_index_all += [i] * len(states)
+            states_all += states_i + states
+            actions_all += actions_i + actions
+            timings_all += timings_i + timings
+            policy_index_all += [i*2] * len(states_i) + [i*2 + 1] * len(states)
             policy_info += [repr(policy)]
 
-            if policy.evaluate:
+            if capture:
+                handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any',
+                                              message="right_close for save, left close for discard")
+
+                if RIGHT_HANDLE_CLOSED(handle_state):
+                    print("Saving PASS")
+                    episode_idx = get_auto_index(policy.dataset_dir)
+                    dataset_name = f'episode_{episode_idx}'
+                    episode_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
+                    print(dataset_name + '\n')
+                    save_episode(episode_path, policy.task['camera_names'], policy.task['episode_len'], states, actions,
+                                 terminal_state)
+                    update_panel(episode_path)
+                else:  # discard and end the trajectory
+                    break
+
+            else:
                 handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until="any",
                                               message="close left handle for fail, close right handle for pass, open left for scratch, open right for quit")
 
@@ -170,19 +168,6 @@ def main(args):
                     print("QUIT")
                     quit()
 
-            if isinstance(policy, Capture):
-                handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any',
-                                              message="right_close for save, left close for discard")
-
-                if RIGHT_HANDLE_CLOSED(handle_state):
-                    print("Saving PASS")
-                    episode_idx = get_auto_index(policy.dataset_dir)
-                    dataset_name = f'episode_{episode_idx}'
-                    episode_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
-                    print(dataset_name + '\n')
-                    save_episode(episode_path, policy.task['camera_names'], policy.task['episode_len'], states, actions,
-                                 terminal_state)
-                    update_panel(episode_path)
 
             initial_state = terminal_state
 
@@ -211,6 +196,7 @@ if __name__ == '__main__':
                         required=False)
     parser.add_argument('--current_limit', type=int, help='gripper current limit', default=300, required=False)
     parser.add_argument('--save_task', type=str, help='save trajectory as task', default=None, required=False)
+    parser.add_argument('--capture_mode', type=str, help='save trajectory as task', default=None, required=False, choices=['ALL', 'LAST'])
 
     # dummy arguments to make DETR happy
     parser.add_argument('--task_name', type=str, default='empty')
