@@ -12,13 +12,18 @@ from primitives import ACTPrimitive
 from matplotlib import pyplot as plt
 import numpy as np
 
-
 ROUTINES = {
+    'grasp_battery': {
+        'sequence': [
+            ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/worldly-puddle-13/policy_min_val_loss0.27740.ckpt'),
+        ]
+    },
     'drop_battery_in_slot': {
         'sequence': [
             ACTPrimitive('grasp_battery'),
             ACTPrimitive('drop_battery_in_slot_only')
-        ]},
+        ]
+    },
     'push_battery_in_slot_only': {
         'sequence': [
             ACTPrimitive('push_battery_in_slot',
@@ -26,7 +31,8 @@ ROUTINES = {
                          # '/mnt/magneto/checkpoints/push_battery_in_slot/peach-disco-3/policy_min_val_loss0.33072.ckpt'
                          # '/mnt/magneto/checkpoints/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt'
                          )
-        ]},
+        ]
+    },
     'slot_battery': {
         'sequence': [
             ACTPrimitive('grasp_battery',
@@ -35,7 +41,8 @@ ROUTINES = {
                          '/mnt/magneto/checkpoints/drop_battery_in_slot_only/noble-shape-2/policy_best_inv_learning_error_0.04085.ckpt'),
             ACTPrimitive('push_battery_in_slot',
                          '/mnt/magneto/checkpoints/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt')
-        ]},
+        ]
+    },
 }
 
 
@@ -77,6 +84,7 @@ def main(args):
     plt.ion()
     fig, ax = plt.subplots(1, len(sequence), figsize=(6 * len(sequence), 12), dpi=80)
     ax_initial_state_img = []
+    ax = ax if isinstance(ax, type(list)) else [ax]
     for i in range(len(sequence)):
         ax_initial_state_img.append(ax[i].imshow(np.zeros((640, 480))))
     fig.tight_layout()
@@ -114,16 +122,19 @@ def main(args):
         policy_info = []
 
         for i, (policy, capture) in enumerate(zip(sequence, capture_flags)):
-            states_i, actions_i, timings_i, terminal_state_i = policy.initial(env, initial_state, master_bot_left, master_bot_right)
+            states_i, actions_i, timings_i, terminal_state_i = policy.initial(env, initial_state, master_bot_left,
+                                                                              master_bot_right)
             if capture:
-                states, actions, timings, terminal_state = policy.capture(env, terminal_state_i, master_bot_left, master_bot_right)
+                states, actions, timings, terminal_state = policy.capture(env, terminal_state_i, master_bot_left,
+                                                                          master_bot_right)
             else:
-                states, actions, timings, terminal_state = policy.execute(env, terminal_state_i, master_bot_left, master_bot_right)
+                states, actions, timings, terminal_state = policy.execute(env, terminal_state_i, master_bot_left,
+                                                                          master_bot_right)
 
             states_all += states_i + states
             actions_all += actions_i + actions
             timings_all += timings_i + timings
-            policy_index_all += [i*2] * len(states_i) + [i*2 + 1] * len(states)
+            policy_index_all += [i * 2] * len(states_i) + [i * 2 + 1] * len(states)
             policy_info += [repr(policy)]
 
             if capture:
@@ -192,7 +203,6 @@ def main(args):
                     print("QUIT")
                     quit()
 
-
             initial_state = terminal_state
 
         print(f'trajectory states: {len(states_all)} actions: {len(actions_all)}')
@@ -220,7 +230,8 @@ if __name__ == '__main__':
                         required=False)
     parser.add_argument('--current_limit', type=int, help='gripper current limit', default=300, required=False)
     parser.add_argument('--save_task', type=str, help='save trajectory as task', default=None, required=False)
-    parser.add_argument('--capture_mode', type=str, help='save trajectory as task', default=None, required=False, choices=['ALL', 'LAST'])
+    parser.add_argument('--capture_mode', type=str, help='save trajectory as task', default=None, required=False,
+                        choices=['ALL', 'LAST'])
 
     # dummy arguments to make DETR happy
     parser.add_argument('--task_name', type=str, default='empty')

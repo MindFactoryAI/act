@@ -29,7 +29,7 @@ def get_gripper_position_normalized(master_bot):
 
 
 class ACTPrimitive:
-    def __init__(self, task_name, initial_move_time=None, initial_gripper_targets=None, checkpoint_path=None,
+    def __init__(self, task_name, checkpoint_path=None, initial_move_time=None, initial_gripper_targets=None,
                  chunk_size=100, hidden_dim=512, dim_feedforward=3200, evaluate=True):
         """
 
