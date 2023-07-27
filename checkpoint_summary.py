@@ -8,10 +8,11 @@ from tqdm import tqdm
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('checkpoint_dir')
+    parser.add_argument('task_name', default='*')
     args = parser.parse_args()
 
     checkpoints = []
-    checkpoints += list(Path(args.checkpoint_dir).glob('*/*/*.ckpt'))
+    checkpoints += list(Path(args.checkpoint_dir).glob(f'{args.task_name}/*/*.ckpt'))
     checkpoints += list(Path(args.checkpoint_dir).glob('*.ckpt'))
 
     table = Table(show_header=True, header_style="bold magenta")
@@ -23,7 +24,9 @@ if __name__ == '__main__':
     table.add_column("Trials", style="red")
     table.add_column("Rate")
 
-    for checkpoint in tqdm(checkpoints):
+    pbar = tqdm(checkpoints)
+    for checkpoint in pbar:
+        pbar.set_description(f'processing {checkpoint}')
         ckpt_info = CheckPointInfo.load(checkpoint)
         if ckpt_info.trials_n > 0:
             table.add_row(
