@@ -9,6 +9,7 @@ from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED,
 from pathlib import Path
 import time
 import numpy as np
+from checkpoint import CheckPointInfo
 
 CHECKPOINT_DIR = '/mnt/magneto/checkpoints'
 
@@ -28,28 +29,57 @@ def get_gripper_position_normalized(master_bot):
     return MASTER_GRIPPER_JOINT_NORMALIZE_FN(master_bot.dxl.joint_states.position[6])
 
 
-class ACTPrimitive:
-    def __init__(self, task_name, checkpoint_path=None, initial_move_time=None, initial_gripper_targets=None,
-                 chunk_size=100, hidden_dim=512, dim_feedforward=3200, evaluate=True):
-        """
+class Primitive:
+    def __init__(self):
+        self.task_name = None
+        self.initial_policy = None
+        self.execute_policy = None
 
-        @param task_name: name of the task from aloha_scripts.constants TASK_CONFIG
-        @param initial_move_time: time in seconds to move to start position, if not set will default to initial_move_time in TASK_CONFIG 1. second otherwise
-        @param initial_gripper_targets: [left, right], if none will just be the current settings
-        @param checkpoint_path: path to checkpoint, if None will take the checkpoint from CANONICAL_CHECKPOINTS['task_name']
-        @param chunk_size: number of actions to lookahead and average over (k from the paper)
-        @param hidden_dim: of the embedding in the transformer
-        @param dim_feedforward:
-        @param evaluate: evaluate if checkpoint is set
-        """
+    def initial(self, env, initial_state, master_bot_left=None, master_bot_right=None):
+        self.initial_policy(env, initial_state, master_bot_left, master_bot_right)
 
+    def execute(self, env, initial_state, master_bot_left=None, master_bot_right=None):
+        self.execute_policy(env, initial_state, master_bot_left, master_bot_right)
+
+    def __repr__(self):
+        return f"initial_policy: {self.initial_policy}, execute_policy: {self.execute_policy}"
+
+
+class ACTPrimitive(Primitive):
+    def __init__(self, task_name, checkpoint_path=None):
+        super().__init__()
+        self.task_name = task_name
+        self.task = TASK_CONFIGS[task_name]
+        self.initial_policy = LerpJointPosPolicy(task_name)
+        self.execute_policy = ACTPolicy(task_name, checkpoint_path)
+        self.dataset_dir = TASK_CONFIGS[task_name]['dataset_dir']
+
+    @property
+    def checkpoint_info(self):
+        return CheckPointInfo.load(self.execute_policy.checkpoint_path)
+
+
+class CapturePrimitive(Primitive):
+    def __init__(self, task_name):
+        super().__init__()
+        self.task_name = task_name
+        self.task = TASK_CONFIGS[task_name]
+        self.initial_policy = LerpJointPosPolicy(task_name)
+        self.execute_policy = CapturePolicy(task_name)
+        self.dataset_dir = TASK_CONFIGS[task_name]['dataset_dir']
+
+    @property
+    def checkpoint_info(self):
+        checkpoint_path = Path(self.task['dataset_dir'])/Path('human.ckpt')
+        return CheckPointInfo.load(checkpoint_path, human=True)
+
+
+class LerpJointPosPolicy:
+    def __init__(self, task_name, initial_move_time=None, initial_gripper_targets=None):
         self.task_name = task_name
         self.task = TASK_CONFIGS[task_name]
         self.target_pose_left = self.task['start_left_arm_pose']
         self.target_pose_right = self.task['start_right_arm_pose']
-        self.dataset_dir = self.task['dataset_dir']
-        self.episode_len = self.task['episode_len']
-
         if initial_move_time is not None:
             self.move_time = initial_move_time
         elif 'initial_move_time' in self.task:
@@ -57,46 +87,8 @@ class ACTPrimitive:
         else:
             self.move_time = 1.
         self.initial_gripper_targets = initial_gripper_targets
-        self.checkpoint_path = checkpoint_path if checkpoint_path is not None else CANONICAL_CHECKPOINTS[task_name]
-        self.camera_names = self.task['camera_names']
-        self.state_dim = 14
-        self.evaluate = evaluate
-        self.policy_config = {
-            'lr': 1e-5,
-            'num_queries': chunk_size,
-            'kl_weight': 0.0,
-            'hidden_dim': hidden_dim,
-            'dim_feedforward': dim_feedforward,
-            'lr_backbone': 1e-5,
-            'backbone': 'resnet18',
-            'enc_layers': 4,
-            'dec_layers': 7,
-            'nheads': 8,
-            'camera_names': self.camera_names
-        }
-        self.policy, self.stats = None, None
 
-    def execute(self, env, initial_state, master_bot_left=None, master_bot_right=None):
-
-        if self.policy is None:  # lazy load the policy weights
-            self.policy, self.stats = load_policy_and_stats(self.policy_config, self.checkpoint_path)
-
-        states, actions, timings, terminal_state = \
-            execute_policy_on_env(self.policy, env, initial_state, self.task['episode_len'], self.state_dim, self.stats,
-                                  self.camera_names,
-                                  master_bot_left=master_bot_left, master_bot_right=master_bot_right)
-
-        return states, actions, timings, terminal_state
-
-    def __repr__(self):
-        return f"{self.__class__} task_name: {self.task_name} " \
-               f"checkpoint: {self.checkpoint_path}             " \
-               f"initial_pose_left: {self.target_pose_left} " \
-               f"initial_pose_right {self.target_pose_right}" \
-               f"initial_gripper_targets: {self.initial_gripper_targets} " \
-               f"initial_move_time: {self.move_time}"
-
-    def initial(self, env, initial_state, master_bot_left=None, master_bot_right=None):
+    def __call__(self, env, initial_state, master_bot_left=None, master_bot_right=None):
         num_steps = int(self.move_time / DT)
         states = []
         actions = []
@@ -143,7 +135,78 @@ class ACTPrimitive:
 
         return states, actions, timings, state
 
-    def capture(self, env, initial_state, master_bot_left, master_bot_right, open_grippers_after=False):
+    def __repr__(self):
+        return f"initial_pose_left: {self.target_pose_left} " \
+               f"initial_pose_right {self.target_pose_right}" \
+               f"initial_gripper_targets: {self.initial_gripper_targets} " \
+               f"initial_move_time: {self.move_time}"
+
+
+class ACTPolicy:
+    def __init__(self, task_name, checkpoint_path=None,
+                 chunk_size=100, hidden_dim=512, dim_feedforward=3200):
+        """
+
+        @param task_name: name of the task from aloha_scripts.constants TASK_CONFIG
+        @param initial_move_time: time in seconds to move to start position, if not set will default to initial_move_time in TASK_CONFIG 1. second otherwise
+        @param initial_gripper_targets: [left, right], if none will just be the current settings
+        @param checkpoint_path: path to checkpoint, if None will take the checkpoint from CANONICAL_CHECKPOINTS['task_name']
+        @param chunk_size: number of actions to lookahead and average over (k from the paper)
+        @param hidden_dim: of the embedding in the transformer
+        @param dim_feedforward:
+        @param evaluate: evaluate if checkpoint is set
+        """
+
+        self.task_name = task_name
+        self.task = TASK_CONFIGS[task_name]
+        self.dataset_dir = self.task['dataset_dir']
+        self.episode_len = self.task['episode_len']
+
+        self.checkpoint_path = checkpoint_path if checkpoint_path is not None else CANONICAL_CHECKPOINTS[task_name]
+        self.camera_names = self.task['camera_names']
+        self.state_dim = 14
+        self.policy_config = {
+            'lr': 1e-5,
+            'num_queries': chunk_size,
+            'kl_weight': 0.0,
+            'hidden_dim': hidden_dim,
+            'dim_feedforward': dim_feedforward,
+            'lr_backbone': 1e-5,
+            'backbone': 'resnet18',
+            'enc_layers': 4,
+            'dec_layers': 7,
+            'nheads': 8,
+            'camera_names': self.camera_names
+        }
+        self.policy, self.stats = None, None
+
+    def __call__(self, env, initial_state, master_bot_left=None, master_bot_right=None):
+
+        if self.policy is None:  # lazy load the policy weights
+            self.policy, self.stats = load_policy_and_stats(self.policy_config, self.checkpoint_path)
+
+        states, actions, timings, terminal_state = \
+            execute_policy_on_env(self.policy, env, initial_state, self.task['episode_len'], self.state_dim, self.stats,
+                                  self.camera_names,
+                                  master_bot_left=master_bot_left, master_bot_right=master_bot_right)
+
+        return states, actions, timings, terminal_state
+
+    def __repr__(self):
+        return f"{self.__class__} task_name: {self.task_name} " \
+               f"checkpoint: {self.checkpoint_path}             " \
+               f"policy_config : {self.policy_config}"
+
+
+class CapturePolicy:
+    def __init__(self, task_name):
+
+        self.task_name = task_name
+        self.task = TASK_CONFIGS[task_name]
+        self.episode_len = self.task['episode_len']
+        self.dataset_dir = self.task['dataset_dir']
+
+    def __call__(self, env, initial_state, master_bot_left, master_bot_right, open_grippers_after=False):
         wait_for_input(env, master_bot_left, master_bot_right)
 
         states, actions, timings = \
@@ -158,7 +221,8 @@ class ACTPrimitive:
         if open_grippers_after:
             env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "position")
             env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "position")
-            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)
+            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2,
+                          move_time=0.5)
             env.puppet_bot_left.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
             env.puppet_bot_right.dxl.robot_set_operating_modes("single", "gripper", "current_based_position")
 
@@ -167,3 +231,6 @@ class ACTPrimitive:
             raise Exception("Frequency Mean less than 42, robot capture is too slow")
 
         return states, actions, timings, terminal_state
+
+    def __repr__(self):
+        return f"{self.__class__} task_name: {self.task_name} CAPTURED_BY_HUMAN"

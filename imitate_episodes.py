@@ -12,20 +12,19 @@ import termios
 from pathlib import Path
 
 import wandb
-from checkpoint import CheckPointInfo, get_resume_checkpoint, list_checkpoints
+from checkpoint import CheckPointInfo, get_resume_checkpoint, list_checkpoints, save_best_checkpoints, save_checkpoint
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
-from utils import load_data # data functions
-from utils import sample_box_pose, sample_insertion_pose # robot functions
-from utils import compute_dict_mean, set_seed, detach_dict # helper functions
+from utils import load_data  # data functions
+from utils import sample_box_pose, sample_insertion_pose  # robot functions
+from utils import compute_dict_mean, set_seed, detach_dict  # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 from constants import MASTER_GRIPPER_JOINT_UNNORMALIZE_FN
 from interbotix_xs_msgs.msg import JointSingleCommand
 from robot_utils import torque_on
 from sim_env import BOX_POSE
-
 
 import IPython
 import time
@@ -34,7 +33,6 @@ e = IPython.embed
 
 
 def trajectory_similarity(l1_dist, policy_actions, expert_dist):
-
     # KL divergence between distributions
     policy_dist = torch.distributions.Normal(policy_actions, torch.std(policy_actions))
     kl_div = torch.distributions.kl_divergence(policy_dist, expert_dist)
@@ -43,69 +41,6 @@ def trajectory_similarity(l1_dist, policy_actions, expert_dist):
     tsi = l1_dist + kl_div
 
     return tsi
-
-
-def save_best_checkpoints(checkpoint_dir, run,
-                          val_loss, min_val_loss,
-                          inv_learning_error, min_inv_learning_error,
-                          policy, optimizer,
-                          epoch_train_loss, epoch, top_n_checkpoints=5):
-    """
-    checkpoint_dir: the directory to save checkpoints
-    run: wandb_run
-    val_loss: the val loss
-    min_val_loss: the minimum val_loss reached so far
-    policy: the model
-    optimizer: the optimizer
-    epoch_train_loss: the training loss reached
-    top_n_checkpoints: keep the best n checkpoints
-    """
-
-    if val_loss < min_val_loss:
-        # Update the best validation loss
-        min_val_loss = val_loss
-
-        # Remove any existing checkpoints if there are more than n
-        checkpoints = list_checkpoints(checkpoint_dir, 'policy_min_val_loss')
-        if len(checkpoints) >= top_n_checkpoints:
-            lowest_val_checkpoint = checkpoints[-1]
-            if not Path(str(lowest_val_checkpoint) + '.data').exists():
-                os.remove(os.path.join(checkpoints[-1]))
-
-        # Save the new checkpoint
-        torch.save({
-            "epoch": epoch,
-            "train_loss": epoch_train_loss,
-            "val_loss": min_val_loss,
-            "min_inv_learning_error": min_inv_learning_error,
-            "model_state_dict": policy.state_dict(),
-            "opt_state_dict": optimizer.state_dict(),
-            "wandb_id": run.id
-        }, f'{checkpoint_dir}/policy_min_val_loss{val_loss:.5f}.ckpt')
-
-    if inv_learning_error < min_inv_learning_error:
-        # Update the best validation loss
-        min_inv_learning_error = inv_learning_error
-
-        # Remove any existing checkpoints if there are more than n
-        checkpoints = list_checkpoints(checkpoint_dir, 'policy_best_inv_learning_error')
-        if len(checkpoints) >= top_n_checkpoints:
-            lowest_val_checkpoint = checkpoints[-1]
-            if not Path(str(lowest_val_checkpoint) + '.data').exists():
-                os.remove(os.path.join(checkpoints[-1]))
-
-        # Save the new checkpoint
-        torch.save({
-            "epoch": epoch,
-            "train_loss": epoch_train_loss,
-            "val_loss": min_val_loss,
-            "min_inv_learning_error": min_inv_learning_error,
-            "model_state_dict": policy.state_dict(),
-            "opt_state_dict": optimizer.state_dict(),
-            "wandb_id": run.id
-        }, f'{checkpoint_dir}/policy_best_inv_learning_error_{inv_learning_error:.5f}.ckpt')
-
-    return min_val_loss, min_inv_learning_error
 
 
 def is_sim(task_name):
@@ -161,8 +96,8 @@ def main(args):
                          'camera_names': camera_names,
                          }
     elif policy_class == 'CNNMLP':
-        policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
-                         'camera_names': camera_names,}
+        policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone': backbone, 'num_queries': 1,
+                         'camera_names': camera_names, }
     else:
         raise NotImplementedError
 
@@ -198,7 +133,8 @@ def main(args):
             checkpoints = list_checkpoints(run_dir)
             for i, checkpoint in enumerate(checkpoints):
                 checkpoint_info = CheckPointInfo.load(checkpoint)
-                print(f'{i}. {checkpoint} {checkpoint_info.epoch} {checkpoint_info.successes}/{checkpoint_info.trials_n}')
+                print(
+                    f'{i}. {checkpoint} {checkpoint_info.epoch} {checkpoint_info.successes}/{checkpoint_info.trials_n}')
             while True:
                 selection = int(input('Enter a checkpoint id: '))
                 if selection < len(checkpoints):
@@ -276,11 +212,11 @@ def getch():
 def execute_policy_on_env(policy, env, initial_state, max_timesteps, state_dim, stats, camera_names,
                           pre_process=None, post_process=None, num_queries=100, query_frequency=20,
                           master_bot_left=None, master_bot_right=None):
-
     if pre_process is None:
         pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
     if post_process is None:
-        post_process = lambda a: a * stats['action_std'] + stats['action_mean']# if post_process  is None else post_process
+        post_process = lambda a: a * stats['action_std'] + stats[
+            'action_mean']  # if post_process  is None else post_process
 
     all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
     qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
@@ -362,7 +298,7 @@ def load_policy_and_stats(policy_config, ckpt_path, policy_class='ACT'):
     loading_status = policy.load_state_dict(checkpoint['model_state_dict'])
     print(loading_status)
     print(f"Loaded: {ckpt_path} val_loss: {checkpoint['val_loss']}")
-    stats_path = Path(ckpt_path).parent/Path('dataset_stats.pkl')
+    stats_path = Path(ckpt_path).parent / Path('dataset_stats.pkl')
     # stats_path = os.path.join(run_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
@@ -370,7 +306,6 @@ def load_policy_and_stats(policy_config, ckpt_path, policy_class='ACT'):
 
 
 def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
-
     print(f'evaluating {ckpt_path}')
 
     set_seed(1000)
@@ -390,7 +325,7 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
 
     # load environment
     if real_robot:
-        from aloha_scripts.robot_utils import move_grippers, reboot_grippers # requires aloha
+        from aloha_scripts.robot_utils import move_grippers, reboot_grippers  # requires aloha
         from aloha_scripts.real_env import make_real_env  # requires aloha
 
         env = make_real_env(init_node=True, task=task_name)
@@ -404,7 +339,7 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
     query_frequency = 20
     num_queries = policy_config['num_queries']
 
-    max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
+    max_timesteps = int(max_timesteps * 1)  # may increase for real-world tasks
 
     episode_returns = []
     highest_rewards = []
@@ -415,9 +350,9 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
         rollout_id += 0
         ### set task
         if 'sim_transfer_cube' in task_name:
-            BOX_POSE[0] = sample_box_pose() # used in sim reset
+            BOX_POSE[0] = sample_box_pose()  # used in sim reset
         elif 'sim_insertion' in task_name:
-            BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
+            BOX_POSE[0] = np.concatenate(sample_insertion_pose())  # used in sim reset
 
         initial_state = env.reset()
 
@@ -434,7 +369,8 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
         image_list = [s.observation['images'] for s in states]
 
         if real_robot:
-            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
+            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2,
+                          move_time=0.5)  # open
             pass
 
         print("Space for PASS, any key for FAIL, s for SCRATCH, q for exit")
@@ -451,36 +387,34 @@ def eval_bc(config, ckpt_path, num_rollouts, save_episode=False):
             print("FAIL")
             rewards.append(0.0)
             checkpoint_info.values['trials'].append(0)
-        checkpoint_info.update()
+        checkpoint_info.save()
 
         rewards = np.array(rewards)
-        episode_return = np.sum(rewards[rewards!=None])
+        episode_return = np.sum(rewards[rewards != None])
         episode_returns.append(episode_return)
         episode_highest_reward = np.max(rewards)
         highest_rewards.append(episode_highest_reward)
 
-        print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
+        print(
+            f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward == env_max_reward}')
 
         if save_episode:
             save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
 
     if real_robot:
-        from aloha_scripts.robot_utils import move_grippers, reboot_grippers # requires aloha
+        from aloha_scripts.robot_utils import move_grippers, reboot_grippers  # requires aloha
         from aloha_scripts.real_env import make_real_env  # requires aloha
         reboot_grippers(env.puppet_bot_left, env.puppet_bot_right)
-        move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
+        move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2,
+                      move_time=0.5)  # open
         pass
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
     summary_str = f'\nSuccess rate: {success_rate} Average return: {avg_return} of {len(highest_rewards)} trials\n'
 
-    print(f'{checkpoint_info.ckpt_path} : {checkpoint_info.success_rate} {checkpoint_info.successes}/{checkpoint_info.trials_n}')
-    # for r in range(env_max_reward+1):
-    #     more_or_equal_r = (np.array(highest_rewards) >= r).sum()
-    #     more_or_equal_r_rate = more_or_equal_r / num_rollouts
-    #     summary_str += f'Reward >= {r}: {more_or_equal_r}/{num_rollouts} = {more_or_equal_r_rate*100}%\n'
-
+    print(
+        f'{checkpoint_info.ckpt_path} : {checkpoint_info.success_rate} {checkpoint_info.successes}/{checkpoint_info.trials_n}')
     print(summary_str)
 
     # save success rate to txt
@@ -498,17 +432,15 @@ def forward_pass(data, policy):
     image_data, qpos_data, action_data, is_pad, value = data
     image_data, qpos_data, action_data, is_pad, value = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda(), value.cuda()
 
-    return policy(qpos_data, image_data, action_data, is_pad, value) # TODO remove None
+    return policy(qpos_data, image_data, action_data, is_pad, value)  # TODO remove None
 
 
 def train_bc(config):
-
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
     policy_class = config['policy_class']
     policy_config = config['policy_config']
-
 
     set_seed(seed)
 
@@ -522,7 +454,8 @@ def train_bc(config):
         checkpoint = torch.load(ckpt_path)
         start_epoch = checkpoint['epoch']
         min_val_loss = checkpoint['val_loss']
-        min_inv_learning_error = checkpoint['min_inv_learning_error'] if 'min_inv_learning_error' in checkpoint else np.inf
+        min_inv_learning_error = checkpoint[
+            'min_inv_learning_error'] if 'min_inv_learning_error' in checkpoint else np.inf
         policy.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['opt_state_dict'])
         if 'wandb_id' in checkpoint:
@@ -544,28 +477,17 @@ def train_bc(config):
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
     validation_set = task_config['validation_set'] if 'validation_set' in task_config else None
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, args.batch_size, args.batch_size, args.samples_per_epoch,
-                                                           cutout_prob=args_dict['cutout_prob'], cutout_patch_size=args_dict['cutout_patch_size'], validation_set=validation_set)
+    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, args.batch_size,
+                                                           args.batch_size, args.samples_per_epoch,
+                                                           cutout_prob=args_dict['cutout_prob'],
+                                                           cutout_patch_size=args_dict['cutout_patch_size'],
+                                                           validation_set=validation_set)
 
     # save dataset stats
     Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
     stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
-
-    def save_policy_last(run, epoch, min_val_loss, min_inv_learning_error):
-        ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
-        torch.save(
-            {
-                "epoch": epoch,
-                "train_loss": 0,
-                "val_loss": min_val_loss,
-                "min_inv_learning_error": min_inv_learning_error,
-                "model_state_dict": policy.state_dict(),
-                "opt_state_dict": optimizer.state_dict(),
-                "wandb_id": run.id
-            }, ckpt_path)
-
 
     train_history = []
     validation_history = []
@@ -606,12 +528,11 @@ def train_bc(config):
                     'train_loss': loss.item(),
                     'train_l1': forward_dict['l1'].item(),
                     'train_Kl': forward_dict['kl'].item(),
-                    'train_inv_learning_error': forward_dict['value'].item(),
                 })
 
-
             # compute train epoch stats
-            epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*iteration:(batch_idx+1)*(iteration+1)])
+            epoch_summary = compute_dict_mean(
+                train_history[(batch_idx + 1) * iteration:(batch_idx + 1) * (iteration + 1)])
             epoch_train_loss = epoch_summary['loss']
             summary_string = ''
             summary_string += f"epoch: {epoch} " \
@@ -631,27 +552,23 @@ def train_bc(config):
                         'val_loss': forward_dict['loss'].item(),
                         'val_l1': forward_dict['l1'].item(),
                         'val_Kl': forward_dict['kl'].item(),
-                        'val_inv_learning_error': forward_dict['value'].item(),
                     })
 
                 epoch_summary = compute_dict_mean(epoch_dicts)
                 validation_history.append(epoch_summary)
 
                 epoch_val_loss = epoch_summary['loss']
-                epoch_inv_learning_error = epoch_summary['value']
+                # epoch_inv_learning_error = epoch_summary['value']
 
-                min_val_loss, min_inv_learning_error = save_best_checkpoints(ckpt_dir, run,
-                                                                             epoch_val_loss, min_val_loss,
-                                                                             epoch_inv_learning_error, min_inv_learning_error,
-                                                                             policy, optimizer, epoch_train_loss, epoch,
-                                                                             top_n_checkpoints=3)
+                min_val_loss = save_best_checkpoints(ckpt_dir, run,
+                                                     epoch_val_loss, min_val_loss,
+                                                     policy, optimizer, epoch_train_loss, epoch,
+                                                     top_n_checkpoints=3)
 
                 wandb.log({
                     'epoch_train_loss': epoch_train_loss,
                     'epoch_val_loss': epoch_val_loss,
                     'min_val_loss': min_val_loss,
-                    'epoch_inv_learning_error': epoch_inv_learning_error,
-                    'min_inv_learning_error': min_inv_learning_error
                 })
 
                 summary_string += f'Best ckpt, val loss {min_val_loss:.6f} '
@@ -659,23 +576,29 @@ def train_bc(config):
 
                 if epoch % 1000 == 0:
                     ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "train_loss": epoch_train_loss,
-                            "val_loss": min_val_loss,
-                            "min_inv_learning_error": min_inv_learning_error,
-                            "model_state_dict": policy.state_dict(),
-                            "opt_state_dict": optimizer.state_dict(),
-                            "wandb_id": run.id
-                        }, ckpt_path)
+                    save_checkpoint(ckpt_path, policy, optimizer, {
+                        "epoch": epoch,
+                        "train_loss": epoch_train_loss,
+                        "val_loss": min_val_loss,
+                        "wandb_id": run.id
+                    })
+
                     plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
 
         except KeyboardInterrupt:
             print(f'Training terminated: seed {seed}, val loss {min_val_loss:.6f}')
             break
 
-    save_policy_last(run, current_epoch, min_val_loss, min_inv_learning_error)
+    ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
+
+    save_checkpoint(ckpt_path, policy, optimizer,
+                    {
+                        "epoch": current_epoch,
+                        "train_loss": 0,
+                        "val_loss": min_val_loss,
+                        "wandb_id": run.id
+                    })
+
     print(f'Saved checkpoint policy_last at epoch {current_epoch}, best_checkpoint {min_val_loss}')
     # save training curves
     plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
@@ -688,8 +611,8 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
         plt.figure()
         train_values = [summary[key].item() for summary in train_history]
         val_values = [summary[key].item() for summary in validation_history]
-        plt.plot(np.linspace(0, num_epochs-1, len(train_history)), train_values, label='train')
-        plt.plot(np.linspace(0, num_epochs-1, len(validation_history)), val_values, label='validation')
+        plt.plot(np.linspace(0, num_epochs - 1, len(train_history)), train_values, label='train')
+        plt.plot(np.linspace(0, num_epochs - 1, len(validation_history)), val_values, label='validation')
         # plt.ylim([-0.1, 1])
         plt.tight_layout()
         plt.legend()
@@ -699,7 +622,6 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
 
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--resume', action='store', type=str, help='resume_dir', required=False)
@@ -712,7 +634,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
-    parser.add_argument('--samples_per_epoch', action='store', type=int, help='number of samples per episode per epoch', default=16)
+    parser.add_argument('--samples_per_epoch', action='store', type=int, help='number of samples per episode per epoch',
+                        default=16)
     parser.add_argument('--cutout_prob', type=float, default=0.0)
     parser.add_argument('--cutout_patch_size', type=int, default=300)
 

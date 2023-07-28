@@ -181,9 +181,9 @@ class DETRVAE(nn.Module):
 
         a_hat = self.action_head(hidden_state)
         is_pad_hat = self.is_pad_head(hidden_state)
-        value_hat = self.value(hidden_state.detach())
+        # value_hat = self.value(hidden_state.detach())
 
-        return a_hat, is_pad_hat, [mu, logvar], value_hat
+        return a_hat, is_pad_hat, [mu, logvar]
 
 
 

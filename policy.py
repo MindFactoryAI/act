@@ -5,6 +5,7 @@ import torchvision.transforms as transforms
 
 from detr.main import build_ACT_model_and_optimizer, build_CNNMLP_model_and_optimizer
 import IPython
+from kinematics import fk_loss, widow_x_250_6DOF_M, widow_x_250_6DOF_s_list
 e = IPython.embed
 
 
@@ -26,19 +27,25 @@ class ACTPolicy(nn.Module):
             actions = actions[:, :self.model.num_queries]
             is_pad = is_pad[:, :self.model.num_queries]
 
-            a_hat, is_pad_hat, (mu, logvar), value_hat = self.model(qpos, image, env_state, actions, is_pad)
+            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, env_state, actions, is_pad)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             loss_dict = dict()
             all_l1 = F.l1_loss(actions, a_hat, reduction='none')
             l1 = (all_l1 * ~is_pad.unsqueeze(-1)).mean()
             loss_dict['l1'] = l1
             loss_dict['kl'] = total_kld[0]
-            loss_dict['value'] = torch.mean((value - value_hat) ** 2)  # stop gradient on value loss head, so no weight needed
-            loss_dict['loss'] = loss_dict['l1'] + loss_dict['kl'] * self.kl_weight + loss_dict['value']
+
+            # loss_dict['value'] = torch.mean((value - value_hat) ** 2)  # stop gradient on value loss head, so no weight needed
+            # M, s_list = widow_x_250_6DOF_M.to(actions.device), widow_x_250_6DOF_s_list.to(actions.device)
+            # fk_l = fk_loss(actions, a_hat, M, s_list)
+            # all_fk = (fk_l * ~ is_pad).mean()
+            # loss_dict['fk_loss'] = all_fk
+
+            loss_dict['loss'] = loss_dict['l1'] + loss_dict['kl'] * self.kl_weight  # + loss_dict['value']
 
             return loss_dict
         else: # inference time
-            a_hat, _, (_, _), _ = self.model(qpos, image, env_state) # no action, sample from prior
+            a_hat, _, (_, _) = self.model(qpos, image, env_state) # no action, sample from prior
             return a_hat
 
     def configure_optimizers(self):

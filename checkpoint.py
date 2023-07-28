@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+from uuid import uuid4
 
 import torch
 
@@ -7,9 +9,6 @@ import torch
 class TestResult:
     def __init__(self, episode, result):
         self._result = result
-
-
-
 
 
 class CheckPointInfo(object):
@@ -36,10 +35,14 @@ class CheckPointInfo(object):
     def sidecar(self):
         return Path(f'{str(Path(self.ckpt_path))}.data')
 
+    @property
+    def guid(self):
+        return self.values['guid']
+
     @staticmethod
-    def load(ckpt_path):
+    def load(ckpt_path, human=False):
         checkpoint = Path(ckpt_path)
-        if not checkpoint.exists():
+        if not checkpoint.exists() and not human:
             raise Exception(f'File {checkpoint} not found')
 
         sidecar = Path(f'{str(Path(ckpt_path))}.data')
@@ -48,33 +51,17 @@ class CheckPointInfo(object):
             values = {
                 'trials': [],
             }
+            if human:
+                values['guid'] = 'human'
             with open(sidecar, 'w') as file:
                 json.dump(values, file)
         else:
             with open(sidecar, 'r') as file:
                 values = json.load(file)
 
-        ckpt_info = CheckPointInfo(ckpt_path, values)
+        return CheckPointInfo(ckpt_path, values)
 
-        if 'val_loss' not in ckpt_info.values:
-            try:
-                checkpoint = torch.load(ckpt_path)
-                for key in ['val_loss', 'train_loss', 'epoch']:
-                    if key in checkpoint:
-                        if isinstance(checkpoint[key], torch.Tensor):
-                            value = checkpoint[key].item()
-                        else:
-                            value = str(checkpoint[key])
-                        ckpt_info.values[key] = value
-                    else:  # its the old format, so kludge it and move on
-                        ckpt_info.values['val_loss'] = 10.
-                ckpt_info.update()
-            except RuntimeError:
-                print(f'{ckpt_path} could not be loaded - the file is probably corrupt, delete it')
-
-        return ckpt_info
-
-    def update(self):
+    def save(self):
         with open(self.sidecar, 'w') as file:
             json.dump(self.values, file)
 
@@ -106,3 +93,55 @@ def list_checkpoints(checkpoint_dir, prefix=None):
         return sorted(list(Path(checkpoint_dir).glob('*.ckpt')))
     else:
         return sorted(list(Path(checkpoint_dir).glob(f'{prefix}*.ckpt')))
+
+
+def save_checkpoint(checkpoint_path, policy, optimizer, sidecar_dict):
+    guid = uuid4().hex
+    sidecar_dict['guid'] = guid
+    checkpoint_path = Path(checkpoint_path)
+    torch.save({
+        "model_state_dict": policy.state_dict(),
+        "opt_state_dict": optimizer.state_dict(),
+        "guid": guid
+    }, str(checkpoint_path))
+    sidecar = CheckPointInfo(checkpoint_path, sidecar_dict)
+    sidecar.save()
+
+
+def save_best_checkpoints(checkpoint_dir, run,
+                          val_loss, min_val_loss,
+                          policy, optimizer,
+                          epoch_train_loss, epoch, top_n_checkpoints=5):
+    """
+    checkpoint_dir: the directory to save checkpoints
+    run: wandb_run
+    val_loss: the val loss
+    min_val_loss: the minimum val_loss reached so far
+    policy: the model
+    optimizer: the optimizer
+    epoch_train_loss: the training loss reached
+    top_n_checkpoints: keep the best n checkpoints
+    """
+
+    if val_loss < min_val_loss:
+        # Update the best validation loss
+        min_val_loss = val_loss
+
+        # Remove any existing checkpoints if there are more than n
+        checkpoints = list_checkpoints(checkpoint_dir, 'policy_min_val_loss')
+        if len(checkpoints) >= top_n_checkpoints:
+            lowest_val_checkpoint = checkpoints[-1]
+            if not Path(str(lowest_val_checkpoint) + '.data').exists():
+                os.remove(os.path.join(checkpoints[-1]))
+
+        sidecar_dict = {
+            "epoch": epoch,
+            "train_loss": epoch_train_loss,
+            "val_loss": min_val_loss,
+            "wandb_id": run.id
+        }
+
+        checkpoint_path = f'{checkpoint_dir}/policy_min_val_loss{val_loss:.5f}.ckpt'
+        save_checkpoint(checkpoint_path, policy, optimizer, sidecar_dict)
+
+    return min_val_loss
