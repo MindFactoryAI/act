@@ -4,7 +4,7 @@ from pathlib import Path
 from aloha_scripts.constants import START_ARM_POSE, TASK_CONFIGS
 from aloha_scripts.record_episodes import opening_ceremony
 from data_utils import save_episode, validate_dataset, get_auto_index, Episode
-from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN
+from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN, BOTH_OPEN
 from checkpoint import CheckPointInfo
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 from real_env import make_real_env
@@ -22,10 +22,7 @@ ROUTINES = {
         'sequence': [
             ACTPrimitive('grasp_battery'),
             ACTPrimitive('drop_battery_in_slot_only',
-                         '/mnt/magneto/checkpoints/drop_battery_in_slot_only/vague-gorge-25/policy_min_val_loss0.26261.ckpt'
-                      # '/mnt/magneto/checkpoints/drop_battery_in_slot_only/devoted-flower-4/policy_min_val_loss0.40076.ckpt',
-                      # '/mnt/magneto/checkpoints/drop_battery_in_slot_only/denim-smoke-20/policy_min_val_loss0.32436.ckpt'
-                      # '/mnt/magneto/checkpoints/drop_battery_in_slot_only/crimson-donkey-6/policy_best_inv_learning_error_0.04940.ckpt',
+                         '/mnt/magneto/checkpoints/drop_battery_in_slot_only/silvery-cherry-27/policy_min_val_loss0.23052.ckpt',
                       )
         ]
     },
@@ -108,7 +105,9 @@ def main(args):
 
         initial_state = env.reset()
 
-        wait_for_input(env, master_bot_left, master_bot_right)
+        handle_state = wait_for_input(env, master_bot_left, master_bot_right)
+        if BOTH_OPEN(handle_state):
+            quit()
 
         """ 
         format of capture buffer is

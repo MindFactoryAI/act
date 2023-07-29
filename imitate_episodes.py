@@ -533,7 +533,7 @@ def train_bc(config):
             # compute train epoch stats
             epoch_summary = compute_dict_mean(
                 train_history[(batch_idx + 1) * iteration:(batch_idx + 1) * (iteration + 1)])
-            epoch_train_loss = epoch_summary['loss']
+            epoch_train_loss = epoch_summary['loss'].item()
             summary_string = ''
             summary_string += f"epoch: {epoch} " \
                               f"loss: {epoch_train_loss:.5f}, " \
@@ -557,7 +557,7 @@ def train_bc(config):
                 epoch_summary = compute_dict_mean(epoch_dicts)
                 validation_history.append(epoch_summary)
 
-                epoch_val_loss = epoch_summary['loss']
+                epoch_val_loss = epoch_summary['loss'].item()
                 # epoch_inv_learning_error = epoch_summary['value']
 
                 min_val_loss = save_best_checkpoints(ckpt_dir, run,

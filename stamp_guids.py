@@ -5,6 +5,7 @@ from checkpoint import CheckPointInfo
 from argparse import ArgumentParser
 from tqdm import tqdm
 
+
 def stamp_checkpoint(checkpoint_path):
     checkpoint_path = Path(checkpoint_path)
     assert checkpoint_path.exists(), f"{checkpoint_path} not found"
@@ -22,10 +23,11 @@ def stamp_checkpoint(checkpoint_path):
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('checkpoint_dir')
+    parser.add_argument('task_checkpoint_dir')
     args = parser.parse_args()
 
-    checkpoints_ = list(Path(args.checkpoint_dir).glob("*.ckpt"))
+    checkpoints_ = tqdm(list(Path(args.task_checkpoint_dir).glob("*/*.ckpt")))
 
-    for checkpoint_path in tqdm(checkpoints_):
+    for checkpoint_path in checkpoints_:
+        checkpoints_.set_description(str(checkpoint_path))
         stamp_checkpoint(str(checkpoint_path))
