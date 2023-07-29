@@ -297,7 +297,7 @@ def load_policy_and_stats(policy_config, ckpt_path, policy_class='ACT'):
     checkpoint = torch.load(ckpt_path)
     loading_status = policy.load_state_dict(checkpoint['model_state_dict'])
     print(loading_status)
-    print(f"Loaded: {ckpt_path} val_loss: {checkpoint['val_loss']}")
+    print(f"Loaded: {ckpt_path}")
     stats_path = Path(ckpt_path).parent / Path('dataset_stats.pkl')
     # stats_path = os.path.join(run_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
@@ -452,10 +452,9 @@ def train_bc(config):
         ckpt_path = get_resume_checkpoint(config['resume'])
         print(f'resuming from {ckpt_path}')
         checkpoint = torch.load(ckpt_path)
-        start_epoch = checkpoint['epoch']
-        min_val_loss = checkpoint['val_loss']
-        min_inv_learning_error = checkpoint[
-            'min_inv_learning_error'] if 'min_inv_learning_error' in checkpoint else np.inf
+        checkpoint_info = CheckPointInfo.load(ckpt_path)
+        start_epoch = checkpoint_info.epoch
+        min_val_loss = checkpoint_info.val_loss
         policy.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['opt_state_dict'])
         if 'wandb_id' in checkpoint:

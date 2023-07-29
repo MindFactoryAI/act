@@ -39,6 +39,12 @@ class CheckPointInfo(object):
     def guid(self):
         return self.values['guid']
 
+    @property
+    def trials(self):
+        if 'trials' not in self.values:
+            self.values['trials'] = []
+        return self.values['trials']
+
     @staticmethod
     def load(ckpt_path, human=False):
         checkpoint = Path(ckpt_path)
@@ -67,11 +73,11 @@ class CheckPointInfo(object):
 
     @property
     def trials_n(self):
-        return len(self.values['trials'])
+        return len(self.trials)
 
     @property
     def successes(self):
-        return sum(self.values['trials'])
+        return sum(self.trials)
 
     @property
     def success_rate(self):

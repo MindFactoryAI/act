@@ -15,7 +15,13 @@ import numpy as np
 ROUTINES = {
     'grasp_battery': {
         'sequence': [
-            ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/worldly-puddle-13/policy_min_val_loss0.27740.ckpt'),
+            ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/still-music-23/policy_min_val_loss0.17796.ckpt'),
+        ]
+    },
+    'grasp_battery_300': {
+        'sequence': [
+            ACTPrimitive('grasp_battery',
+                         '/mnt/magneto/checkpoints/grasp_battery/still-music-23/policy_min_val_loss0.16820.ckpt'),
         ]
     },
     'drop_battery_in_slot': {
@@ -84,7 +90,7 @@ def main(args):
     plt.ion()
     fig, ax = plt.subplots(1, len(sequence), figsize=(12 * len(sequence), 12), dpi=80)
     ax_initial_state_img = []
-    # ax = ax if isinstance(ax, type(list)) else [ax]
+    ax = ax if len(sequence) > 1 else [ax]
     for i in range(len(sequence)):
         ax_initial_state_img.append(ax[i].imshow(np.zeros((640, 480))))
     fig.tight_layout()
@@ -147,7 +153,7 @@ def main(args):
                 save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
                              terminal_state)
                 update_panel(i, episode_path)
-                checkpoint_info.values['trials'].append(1)
+                checkpoint_info.trials.append(1)
                 checkpoint_info.save()
                 capture_flags[i] = False
 
@@ -162,7 +168,7 @@ def main(args):
                              terminal_state)
 
                 # record the result
-                checkpoint_info.values['trials'].append(0)
+                checkpoint_info.trials.append(0)
                 checkpoint_info.save()
                 update_panel(i, episode_path)
                 capture_flags[i] = True
