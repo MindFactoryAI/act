@@ -573,7 +573,7 @@ def train_bc(config):
                 summary_string += f'Best ckpt, val loss {min_val_loss:.6f} '
                 pbar.set_description(summary_string)
 
-                if epoch % 1000 == 0:
+                if epoch % (num_epochs//10) == 0:
                     ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
                     save_checkpoint(ckpt_path, policy, optimizer, {
                         "epoch": epoch,

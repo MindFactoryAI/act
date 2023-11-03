@@ -14,9 +14,10 @@ from checkpoint import CheckPointInfo
 CHECKPOINT_DIR = '/mnt/magneto/checkpoints'
 
 CANONICAL_CHECKPOINTS = {
-    'grasp_battery': f'{CHECKPOINT_DIR}/grasp_battery/fancy-cherry-9/policy_best_inv_learning_error_0.05250.ckpt',
+    'grasp_battery': f'/mnt/magneto/checkpoints/grasp_battery/still-music-23/policy_min_val_loss0.17796.ckpt',
     'drop_battery_in_slot_only': f'{CHECKPOINT_DIR}/drop_battery_in_slot_only/rare-serenity-3/policy_best_inv_learning_error_0.04715.ckpt',
-    'push_battery_in_slot': f'{CHECKPOINT_DIR}/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt'
+    'push_battery_in_slot': f'{CHECKPOINT_DIR}/push_battery_in_slot/dummy-osa5na9u/policy_min_val_loss0.31343.ckpt',
+    'slot_battery_novar': None,
 }
 
 
@@ -46,12 +47,12 @@ class Primitive:
 
 
 class ACTPrimitive(Primitive):
-    def __init__(self, task_name, checkpoint_path=None):
+    def __init__(self, task_name, checkpoint_path=None, rollout_len_override=None):
         super().__init__()
         self.task_name = task_name
         self.task = TASK_CONFIGS[task_name]
         self.initial_policy = LerpJointPosPolicy(task_name)
-        self.execute_policy = ACTPolicy(task_name, checkpoint_path)
+        self.execute_policy = ACTPolicy(task_name, checkpoint_path, rollout_len_override=rollout_len_override)
         self.dataset_dir = TASK_CONFIGS[task_name]['dataset_dir']
 
     @property
@@ -144,7 +145,7 @@ class LerpJointPosPolicy:
 
 class ACTPolicy:
     def __init__(self, task_name, checkpoint_path=None,
-                 chunk_size=100, hidden_dim=512, dim_feedforward=3200):
+                 chunk_size=100, hidden_dim=512, dim_feedforward=3200, rollout_len_override=None):
         """
 
         @param task_name: name of the task from aloha_scripts.constants TASK_CONFIG
@@ -160,9 +161,9 @@ class ACTPolicy:
         self.task_name = task_name
         self.task = TASK_CONFIGS[task_name]
         self.dataset_dir = self.task['dataset_dir']
-        self.episode_len = self.task['episode_len']
-
-        self.checkpoint_path = checkpoint_path if checkpoint_path is not None else CANONICAL_CHECKPOINTS[task_name]
+        self.episode_len = self.task['episode_len'] if rollout_len_override is None else rollout_len_override
+        canonical_checkpint = CANONICAL_CHECKPOINTS[task_name] if task_name in CANONICAL_CHECKPOINTS else None
+        self.checkpoint_path = checkpoint_path if checkpoint_path is not None else canonical_checkpint
         self.camera_names = self.task['camera_names']
         self.state_dim = 14
         self.policy_config = {
@@ -186,7 +187,7 @@ class ACTPolicy:
             self.policy, self.stats = load_policy_and_stats(self.policy_config, self.checkpoint_path)
 
         states, actions, timings, terminal_state = \
-            execute_policy_on_env(self.policy, env, initial_state, self.task['episode_len'], self.state_dim, self.stats,
+            execute_policy_on_env(self.policy, env, initial_state, self.episode_len, self.state_dim, self.stats,
                                   self.camera_names,
                                   master_bot_left=master_bot_left, master_bot_right=master_bot_right)
 

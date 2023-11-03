@@ -12,10 +12,33 @@ from primitives import ACTPrimitive, CapturePrimitive
 from matplotlib import pyplot as plt
 import numpy as np
 
+
 ROUTINES = {
+    'pack_kit_novar': {
+        'sequence': [
+            ACTPrimitive('pack_kit_novar',
+                         None)
+        ]
+    },
+    'plug_cable_novar': {
+        'sequence': [
+            ACTPrimitive('plug_cable_novar',
+                         '/mnt/magneto/checkpoints/plug_cable_novar/eternal-silence-2/policy_last.ckpt')
+        ]
+    },
+    'slot_battery_novar': {
+        'sequence': [
+            ACTPrimitive('slot_battery_novar',
+                         '/mnt/magneto/checkpoints/slot_battery_novar/trembling-gob0lin-2/policy_min_val_loss0.23415.ckpt')
+        ]
+    },
     'grasp_battery': {
         'sequence': [
-            ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/still-music-23/policy_min_val_loss0.17796.ckpt'),
+            # ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/fancy-cherry-9/policy_min_val_loss0.26075.ckpt'),
+            # ACTPrimitive('grasp_battery', '/mnt/magneto/checkpoints/grasp_battery/still-music-23/policy_min_val_loss0.17796.ckpt'),
+            ACTPrimitive('grasp_battery',
+                         '/mnt/magneto/checkpoints/grasp_battery/vivid-meadow-29/policy_epoch_309_seed_0.ckpt',
+                         rollout_len_override=300),
         ]
     },
     'grasp_battery_300': {
@@ -28,7 +51,7 @@ ROUTINES = {
         'sequence': [
             ACTPrimitive('grasp_battery'),
             ACTPrimitive('drop_battery_in_slot_only',
-                         '/mnt/magneto/checkpoints/drop_battery_in_slot_only/silvery-cherry-27/policy_min_val_loss0.23052.ckpt',
+                         '/mnt/magneto/checkpoints/drop_battery_in_slot_only/easy-smoke-31/policy_min_val_loss0.21501.ckpt',
                       )
         ]
     },
@@ -87,6 +110,8 @@ def main(args):
     else:
         raise Exception('valid capture modes are ALL or LAST')
 
+    print(capture_flags)
+
     plt.ion()
     fig, ax = plt.subplots(1, len(sequence), figsize=(12 * len(sequence), 12), dpi=80)
     ax_initial_state_img = []
@@ -111,7 +136,8 @@ def main(args):
 
         initial_state = env.reset()
 
-        handle_state = wait_for_input(env, master_bot_left, master_bot_right)
+        # handle_state = wait_for_input(env, master_bot_left, master_bot_right)
+        handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until="keyboard", message="press any key")
         if BOTH_OPEN(handle_state):
             quit()
 
@@ -128,9 +154,10 @@ def main(args):
         """
         states_all, actions_all, timings_all, policy_index_all = [], [], [], []
         policy_info = []
+        print(human_capture_sequence)
 
         for i, (act_policy, capture_policy, capture) in enumerate(zip(sequence, human_capture_sequence, capture_flags)):
-            policy = capture_policy if capture else act_policy
+            policy = capture_policy if capture and args.capture_mode is not None else act_policy
             states_i, actions_i, timings_i, terminal_state_i = policy.initial_policy(env, initial_state, master_bot_left, master_bot_right)
             states, actions, timings, terminal_state = policy.execute_policy(env, terminal_state_i, master_bot_left, master_bot_right)
 
@@ -141,46 +168,58 @@ def main(args):
             checkpoint_info = policy.checkpoint_info
             policy_info += [repr(policy)]
 
-            handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any',
-                                              message="CLOSE_RIGHT for PASS, CLOSE_LEFT for FAIL, OPEN_LEFT for SCRATCH")
+            while True:
 
-            if RIGHT_HANDLE_CLOSED(handle_state):
-                print("Saving PASS")
-                episode_idx = get_auto_index(policy.dataset_dir)
-                dataset_name = f'episode_{episode_idx}'
-                episode_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
-                print(dataset_name + '\n')
-                save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
-                             terminal_state)
-                update_panel(i, episode_path)
-                checkpoint_info.trials.append(1)
-                checkpoint_info.save()
-                capture_flags[i] = False
+                # handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any',
+                #                                   message="OPEN_RIGHT for PASS, OPEN_LEFT for FAIL, CLOSE_LEFT for SCRATCH")
 
-            elif LEFT_HANDLE_CLOSED(handle_state):
-                print('FAIL')
-                # capture fails in a subdirectory
-                dataset_fail_dir = policy.dataset_dir + '/fails'
-                episode_idx = get_auto_index(dataset_fail_dir)
-                dataset_name = f'episode_{episode_idx}'
-                episode_path = validate_dataset(dataset_fail_dir, dataset_name, overwrite=False)
-                save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
-                             terminal_state)
+                handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='keyboard',
+                                                  message="ENTER for PASS, ZERO for FAIL, - for SCRATCH")
+                handle_state += ' '
 
-                # record the result
-                checkpoint_info.trials.append(0)
-                checkpoint_info.save()
-                update_panel(i, episode_path)
-                capture_flags[i] = True
-                break
+                if RIGHT_HANDLE_OPEN(handle_state) or handle_state[0] == '\r':
+                    print("Saving PASS")
+                    episode_idx = get_auto_index(policy.dataset_dir)
+                    dataset_name = f'episode_{episode_idx}'
+                    episode_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
+                    print(dataset_name + '\n')
+                    if len(actions) == policy.task['episode_len']:
+                        save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
+                                     terminal_state)
+                        update_panel(i, episode_path)
+                    else:
+                        print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected {policy.task['episode_len']}")
+                    checkpoint_info.trials.append(1)
+                    checkpoint_info.save()
+                    if args.capture_mode == "ALL" or args.capture_mode == 'LAST':
+                        break
+                    else:
+                        capture_flags[i] = False
+                        break
 
-            elif LEFT_HANDLE_OPEN(handle_state):
-                print("SCRATCH")
-                break
+                elif LEFT_HANDLE_OPEN(handle_state) or handle_state[0] == '0':
+                    print('FAIL')
+                    # capture fails in a subdirectory
+                    dataset_fail_dir = policy.dataset_dir + '/fails'
+                    episode_idx = get_auto_index(dataset_fail_dir)
+                    dataset_name = f'episode_{episode_idx}'
+                    episode_path = validate_dataset(dataset_fail_dir, dataset_name, overwrite=False)
+                    if len(actions) == policy.task['episode_len']:
+                        save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
+                                     terminal_state)
+                        update_panel(i, episode_path)
+                    else:
+                        print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected {policy.task['episode_len']}")
 
-            elif RIGHT_HANDLE_OPEN(handle_state):
-                print("QUIT")
-                quit()
+                    # record the result
+                    checkpoint_info.trials.append(0)
+                    checkpoint_info.save()
+                    capture_flags[i] = True
+                    break
+
+                elif LEFT_HANDLE_CLOSED(handle_state) or handle_state[0] == '-':
+                    print("SCRATCH")
+                    break
 
             initial_state = terminal_state
 
@@ -209,7 +248,7 @@ if __name__ == '__main__':
                         required=False)
     parser.add_argument('--current_limit', type=int, help='gripper current limit', default=300, required=False)
     parser.add_argument('--save_task', type=str, help='save trajectory as task', default=None, required=False)
-    parser.add_argument('--capture_mode', type=str, help='save trajectory as task', default=None, required=False,
+    parser.add_argument('--capture_mode', type=str, help='capture trajectories', default=None, required=False,
                         choices=['ALL', 'LAST'])
 
     # dummy arguments to make DETR happy
