@@ -204,6 +204,7 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
                 cutout_f = cutout(self.cutout_patch_size, self.cutout_prob)
                 image = np.stack([cutout_f(im) for im in image])
 
+
         # self.is_sim = is_sim
         padded_action = np.zeros(original_action_shape, dtype=np.float32)
         padded_action[:action_len] = action
@@ -224,6 +225,9 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
         image_data = image_data / 255.0
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
+
+        # if self.joint_observation_noise:
+        #     qpos_data =
 
         monte_carlo_estimate = self.discount ** (episode_len - 1 - start_ts)
 

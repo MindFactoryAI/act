@@ -17,7 +17,16 @@ ROUTINES = {
     'pack_kit_novar': {
         'sequence': [
             ACTPrimitive('pack_kit_novar',
-                         None)
+                         # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_epoch_810_seed_0.ckpt',
+
+                         '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_epoch_720_seed_0.ckpt'
+            # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_min_val_loss0.37206.ckpt',
+                        # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_min_val_loss0.37441.ckpt',
+                         # '/mnt/magneto/checkpoints/pack_kit_novar/proud-dust-2/policy_last.ckpt'
+                         # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_last.ckpt')
+                         #'/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_min_val_loss0.37118.ckpt',
+                        # rollout_len_override=1400
+            )
         ]
     },
     'plug_cable_novar': {
