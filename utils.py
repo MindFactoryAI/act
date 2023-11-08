@@ -5,7 +5,6 @@ import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
 
-
 import IPython
 
 e = IPython.embed
@@ -150,7 +149,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
 class CompressedEpisodicDataset(torch.utils.data.Dataset):
     def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, samples_per_epoch=1,
-                 mixup=False, cutout_prob=0., cutout_patch_size=250, discount=0.99):
+                 mixup=False, cutout_prob=0., cutout_patch_size=250, qpos_noise=1.0, discount=0.99):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
@@ -161,6 +160,7 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
         self.mixup = mixup
         self.cutout_prob = cutout_prob
         self.cutout_patch_size = cutout_patch_size
+        self.qpos_noise = qpos_noise
         self.discount = discount
         self.__getitem__(0) # initialize self.is_sim
 
@@ -226,13 +226,20 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
 
-        # if self.joint_observation_noise:
-        #     qpos_data =
+
+        if self.qpos_noise != 0.:
+            # qpos_data = np.random.normal(qpos_data, self.qpos_noise)
+            with torch.no_grad():
+                qpos_copy = qpos_data.clone()
+                qpos_data = torch.distributions.Normal(qpos_data, self.qpos_noise * torch.ones_like(qpos_data)).sample()
+
+                # dont noise the gripper position
+                qpos_data[6] = qpos_copy[6]
+                qpos_data[13] = qpos_copy[13]
 
         monte_carlo_estimate = self.discount ** (episode_len - 1 - start_ts)
 
         return image_data, qpos_data, action_data, is_pad, monte_carlo_estimate
-
 
 
 def get_norm_stats(dataset_dir, num_episodes):
