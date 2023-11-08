@@ -7,9 +7,17 @@ import time
 from tqdm import tqdm
 import os
 
+
+def delete(checkpoint):
+    print(f'deleting {str(checkpoint)}')
+    os.remove(checkpoint)
+    os.remove(f'{str(Path(checkpoint))}.data')
+
+
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('checkpoint_dir')
+    parser.add_argument('--max_val_loss', type=float, default=None)
     args = parser.parse_args()
 
     checkpoints = []
@@ -26,6 +34,14 @@ if __name__ == '__main__':
         if ckpt_info.trials_n == 0:
             age_days = (time.time() - checkpoint.stat().st_mtime) / 60 / 60 / 24
             if age_days > 90:
-                print(f'deleting {str(checkpoint)}')
-                os.remove(checkpoint)
-                os.remove(f'{str(Path(checkpoint))}.data')
+                delete(checkpoint)
+                continue
+
+        if ckpt_info.epoch == 0:
+            delete(checkpoint)
+            continue
+
+        if args.max_val_loss is not None:
+            if ckpt_info.val_loss > args.max_val_loss:
+                delete(checkpoint)
+                continue
