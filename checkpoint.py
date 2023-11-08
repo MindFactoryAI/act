@@ -63,7 +63,11 @@ class CheckPointInfo(object):
                 json.dump(values, file)
         else:
             with open(sidecar, 'r') as file:
-                values = json.load(file)
+                try:
+                    values = json.load(file)
+                except:
+                    print(f'failed to load {file}')
+                    raise Exception('failed to load checkpoint')
 
         return CheckPointInfo(ckpt_path, values)
 
