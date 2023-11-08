@@ -17,22 +17,18 @@ ROUTINES = {
     'pack_kit_novar': {
         'sequence': [
             ACTPrimitive('pack_kit_novar',
-                         # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_epoch_810_seed_0.ckpt',
-
-                         '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_epoch_720_seed_0.ckpt'
-            # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_min_val_loss0.37206.ckpt',
-                        # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_min_val_loss0.37441.ckpt',
-                         # '/mnt/magneto/checkpoints/pack_kit_novar/proud-dust-2/policy_last.ckpt'
-                         # '/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_last.ckpt')
-                         #'/mnt/magneto/checkpoints/pack_kit_novar/lemon-snow-3/policy_min_val_loss0.37118.ckpt',
-                        # rollout_len_override=1400
+                         '/mnt/magneto/checkpoints/pack_kit_novar/splendid-flower-20/policy_min_val_loss0.37957.ckpt',
             )
         ]
     },
     'plug_cable_novar': {
         'sequence': [
             ACTPrimitive('plug_cable_novar',
-                         '/mnt/magneto/checkpoints/plug_cable_novar/eternal-silence-2/policy_last.ckpt')
+                         '/mnt/magneto/checkpoints/plug_cable_novar/soft-smoke-7/policy_epoch_720_seed_0.ckpt',
+                         # '/mnt/magneto/checkpoints/plug_cable_novar/soft-smoke-7/policy_min_val_loss0.14366.ckpt'
+                         # '/mnt/magneto/checkpoints/plug_cable_novar/soft-smoke-7/policy_last.ckpt',
+                         )
+                         # '/mnt/magneto/checkpoints/plug_cable_novar/eternal-silence-2/policy_last.ckpt')
         ]
     },
     'slot_battery_novar': {
@@ -186,15 +182,29 @@ def main(args):
                                                   message="ENTER for PASS, ZERO for FAIL, - for SCRATCH")
                 handle_state += ' '
 
-                if RIGHT_HANDLE_OPEN(handle_state) or handle_state[0] == '\r':
+                def is_positive_digit(handle_state):
+                    ch = handle_state[0]
+                    if ch.isdigit():
+                        ch = int(ch)
+                        if 1 <= ch <= 9:
+                            return True
+
+                    return False
+
+                def get_digit(handle_state):
+                    return int(handle_state[0])
+
+                if RIGHT_HANDLE_OPEN(handle_state) or handle_state[0] == '\r' or is_positive_digit(handle_state):
                     print("Saving PASS")
                     episode_idx = get_auto_index(policy.dataset_dir)
                     dataset_name = f'episode_{episode_idx}'
                     episode_path = validate_dataset(policy.dataset_dir, dataset_name, overwrite=False)
                     print(dataset_name + '\n')
+                    rating = get_digit(handle_state) if is_positive_digit(handle_state) else 10
+
                     if len(actions) == policy.task['episode_len']:
                         save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
-                                     terminal_state)
+                                     terminal_state, rating=rating)
                         update_panel(i, episode_path)
                     else:
                         print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected {policy.task['episode_len']}")
@@ -215,7 +225,7 @@ def main(args):
                     episode_path = validate_dataset(dataset_fail_dir, dataset_name, overwrite=False)
                     if len(actions) == policy.task['episode_len']:
                         save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
-                                     terminal_state)
+                                     terminal_state, rating=0)
                         update_panel(i, episode_path)
                     else:
                         print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected {policy.task['episode_len']}")
