@@ -1,11 +1,10 @@
 import argparse
-from pathlib import Path
 
 from aloha_scripts.constants import START_ARM_POSE, TASK_CONFIGS
 from aloha_scripts.record_episodes import opening_ceremony
-from data_utils import save_episode, validate_dataset, get_auto_index, Episode
-from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, RIGHT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN, BOTH_OPEN
-from checkpoint import CheckPointInfo
+from data_utils import save_episode, validate_dataset, get_auto_index
+from robot_utils import wait_for_input, LEFT_HANDLE_CLOSED, LEFT_HANDLE_OPEN, RIGHT_HANDLE_OPEN, \
+    BOTH_OPEN, AsyncKeyboardInputBuffer
 from interbotix_xs_modules.arm import InterbotixManipulatorXS
 from real_env import make_real_env
 from primitives import ACTPrimitive, CapturePrimitive
@@ -13,11 +12,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 import queue
 import matplotlib
-import pdb
 from time import time
-import sys
-import termios
-import tty
 
 matplotlib.use('TkAgg', force=True)
 
@@ -148,13 +143,11 @@ def main(args, keybuffer):
 
         opening_ceremony(master_bot_left, master_bot_right, env.puppet_bot_left, env.puppet_bot_right, reboot,
                          args.current_limit, START_ARM_POSE[:6], START_ARM_POSE[:6], reboot_grippers=False)
-        reboot = False
-
         initial_state = env.reset()
 
         handle_state = wait_for_input(env, master_bot_left, master_bot_right, keybuffer, block_until="keyboard", message="press any key")
         if BOTH_OPEN(handle_state) or handle_state[0] == 'q':
-            quit()
+            break
 
         """ 
         format of capture buffer is
@@ -310,63 +303,12 @@ if __name__ == '__main__':
     def process_trajectory(buffer):
         while True:
             args, kwargs = buffer.get()
+            if args[0] == 'quit':
+                break
+
             print(f"SAVING {args[0]}")
             save_episode(*args, **kwargs)
             print(f"SAVED {args[0]}")
-
-
-    class NonBlockingInput:
-        def __enter__(self):
-            self.fd = sys.stdin.fileno()
-            self.original_settings = termios.tcgetattr(self.fd)
-            tty.setcbreak(self.fd)
-            return self
-
-        def __exit__(self, type, value, traceback):
-            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original_settings)
-
-        def get_key(self):
-            return sys.stdin.read(1)
-
-
-    class AsyncKeyboardInputBuffer:
-        def __init__(self):
-            self.key_pressed = threading.Event()
-            self.keybuffer = queue.Queue()
-            self.user_input_thread = threading.Thread(target=self.read_keys)
-            self.user_input_thread.start()
-            super().__init__()
-
-        def read_keys(self):
-            while True:
-                with NonBlockingInput() as nbi:
-                    key = nbi.get_key()
-                    print(key)
-                    self.keybuffer.put(key)
-                    self.key_pressed.set()
-
-        def getkey_nonblock(self):
-            """
-            Reads a single keypress from keyboard but does not block
-            @return: None if no key was pressed, otherwise returns the key pressed
-            """
-            if self.key_pressed:
-                if self.key_pressed.is_set():
-                    key = self.keybuffer.get()
-                    self.key_pressed.clear()
-                    return key
-                else:
-                    return None
-
-        def getkey_block(self):
-            """
-            Blocks and waits for a single keypress
-            @return: the key pressed
-            """
-            self.key_pressed.wait()
-            key = self.keybuffer.get()
-            self.key_pressed.clear()
-            return key
 
 
     keybuffer = AsyncKeyboardInputBuffer()
@@ -374,7 +316,11 @@ if __name__ == '__main__':
     processing_thread = threading.Thread(target=process_trajectory, args=(buffer,))
     processing_thread.start()
 
-
     with concurrent.futures.ProcessPoolExecutor() as executor:
         main(args, keybuffer)
 
+    print('waiting on input thread')
+    keybuffer.user_input_thread.join()
+    print('waiting on processing thread')
+    buffer.put((('quit', ), {}))
+    processing_thread.join()
