@@ -11,7 +11,15 @@ from real_env import make_real_env
 from primitives import ACTPrimitive, CapturePrimitive
 from matplotlib import pyplot as plt
 import numpy as np
+import queue
+import matplotlib
+import pdb
+from time import time
+import sys
+import termios
+import tty
 
+matplotlib.use('TkAgg', force=True)
 
 ROUTINES = {
     'pack_kit_novar': {
@@ -93,7 +101,9 @@ ROUTINES = {
 }
 
 
-def main(args):
+def main(args, keybuffer):
+    print("LOADING")
+
     # source of data
     master_bot_left = InterbotixManipulatorXS(robot_model="wx250s", group_name="arm", gripper_name="gripper",
                                               robot_name=f'master_left', init_node=True)
@@ -104,7 +114,7 @@ def main(args):
     reboot = True  # always reboot on the first episode
 
     sequence = ROUTINES[args.routine_name]['sequence']
-    human_capture_sequence = [CapturePrimitive(prim.task_name) for prim in sequence]
+    human_capture_sequence = [CapturePrimitive(prim.task_name, keybuffer) for prim in sequence]
 
     if args.capture_mode == "ALL":
         capture_flags = [True] * len(sequence)
@@ -115,7 +125,7 @@ def main(args):
     else:
         raise Exception('valid capture modes are ALL or LAST')
 
-    print(capture_flags)
+    print("OPENING MATPLOTLIB")
 
     plt.ion()
     fig, ax = plt.subplots(1, len(sequence), figsize=(12 * len(sequence), 12), dpi=80)
@@ -128,22 +138,22 @@ def main(args):
     plt.draw()
     plt.pause(1)
 
-    def update_panel(sequence_i, episode_path):
-        frame = Episode(f'{episode_path}.hdf5').get_frame(0, "RGB")
-        cam_low = Episode(f'{episode_path}.hdf5').split_frame(frame)['cam_low']
+    print("ENTERING MAIN LOOP")
+
+    def update_panel(sequence_i, cam_low):
         ax_initial_state_img[sequence_i].set_data(np.fliplr(cam_low.swapaxes(0, 1)))
         plt.pause(1)
 
     while True:
 
         opening_ceremony(master_bot_left, master_bot_right, env.puppet_bot_left, env.puppet_bot_right, reboot,
-                         args.current_limit, START_ARM_POSE[:6], START_ARM_POSE[:6])
+                         args.current_limit, START_ARM_POSE[:6], START_ARM_POSE[:6], reboot_grippers=False)
+        reboot = False
 
         initial_state = env.reset()
 
-        # handle_state = wait_for_input(env, master_bot_left, master_bot_right)
-        handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until="keyboard", message="press any key")
-        if BOTH_OPEN(handle_state):
+        handle_state = wait_for_input(env, master_bot_left, master_bot_right, keybuffer, block_until="keyboard", message="press any key")
+        if BOTH_OPEN(handle_state) or handle_state[0] == 'q':
             quit()
 
         """ 
@@ -159,7 +169,6 @@ def main(args):
         """
         states_all, actions_all, timings_all, policy_index_all = [], [], [], []
         policy_info = []
-        print(human_capture_sequence)
 
         for i, (act_policy, capture_policy, capture) in enumerate(zip(sequence, human_capture_sequence, capture_flags)):
             policy = capture_policy if capture and args.capture_mode is not None else act_policy
@@ -175,11 +184,9 @@ def main(args):
 
             while True:
 
-                # handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='any',
-                #                                   message="OPEN_RIGHT for PASS, OPEN_LEFT for FAIL, CLOSE_LEFT for SCRATCH")
-
-                handle_state = wait_for_input(env, master_bot_left, master_bot_right, block_until='keyboard',
+                handle_state = wait_for_input(env, master_bot_left, master_bot_right, keybuffer, block_until='keyboard',
                                                   message="ENTER for PASS, ZERO for FAIL, - for SCRATCH")
+
                 handle_state += ' '
 
                 def is_positive_digit(handle_state):
@@ -194,7 +201,7 @@ def main(args):
                 def get_digit(handle_state):
                     return int(handle_state[0])
 
-                if RIGHT_HANDLE_OPEN(handle_state) or handle_state[0] == '\r' or is_positive_digit(handle_state):
+                if RIGHT_HANDLE_OPEN(handle_state) or handle_state[0] == '\n' or is_positive_digit(handle_state):
                     print("Saving PASS")
                     episode_idx = get_auto_index(policy.dataset_dir)
                     dataset_name = f'episode_{episode_idx}'
@@ -203,9 +210,18 @@ def main(args):
                     rating = get_digit(handle_state) if is_positive_digit(handle_state) else 10
 
                     if len(actions) == policy.task['episode_len']:
-                        save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
-                                     terminal_state, rating=rating)
-                        update_panel(i, episode_path)
+
+                        buffer_args = episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions, terminal_state
+                        buffer_kwargs = {'rating': rating }
+
+                        # pdb.set_trace()
+                        # pydevd.settrace(host='localhost', port=5678, stdoutToServer=True, stderrToServer=True)
+                        start_write = time()
+                        buffer.put((buffer_args, buffer_kwargs))
+                        print(time() - start_write)
+
+                        # save_episode(*buffer_args, **buffer_kwargs)
+                        update_panel(i, states[0].observation['images']['cam_low'])
                     else:
                         print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected {policy.task['episode_len']}")
                     checkpoint_info.trials.append(1)
@@ -224,9 +240,13 @@ def main(args):
                     dataset_name = f'episode_{episode_idx}'
                     episode_path = validate_dataset(dataset_fail_dir, dataset_name, overwrite=False)
                     if len(actions) == policy.task['episode_len']:
-                        save_episode(episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions,
-                                     terminal_state, rating=0)
-                        update_panel(i, episode_path)
+                        # pdb.set_trace()
+                        buffer_args = episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions, terminal_state
+                        buffer_kwargs = {'rating': 0}
+                        buffer.put((buffer_args, buffer_kwargs))
+
+                        # save_episode(*buffer_args, **buffer_kwargs)
+                        update_panel(i, states[0].observation['images']['cam_low'])
                     else:
                         print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected {policy.task['episode_len']}")
 
@@ -282,4 +302,79 @@ if __name__ == '__main__':
     if args.save_task is not None:
         assert args.save_task in TASK_CONFIGS, '--save_task {args.save_task} not found in TASK_CONFIG'
 
-    main(args)
+    import concurrent.futures
+    import threading
+
+    buffer = queue.Queue()
+
+    def process_trajectory(buffer):
+        while True:
+            args, kwargs = buffer.get()
+            print(f"SAVING {args[0]}")
+            save_episode(*args, **kwargs)
+            print(f"SAVED {args[0]}")
+
+
+    class NonBlockingInput:
+        def __enter__(self):
+            self.fd = sys.stdin.fileno()
+            self.original_settings = termios.tcgetattr(self.fd)
+            tty.setcbreak(self.fd)
+            return self
+
+        def __exit__(self, type, value, traceback):
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original_settings)
+
+        def get_key(self):
+            return sys.stdin.read(1)
+
+
+    class AsyncKeyboardInputBuffer:
+        def __init__(self):
+            self.key_pressed = threading.Event()
+            self.keybuffer = queue.Queue()
+            self.user_input_thread = threading.Thread(target=self.read_keys)
+            self.user_input_thread.start()
+            super().__init__()
+
+        def read_keys(self):
+            while True:
+                with NonBlockingInput() as nbi:
+                    key = nbi.get_key()
+                    print(key)
+                    self.keybuffer.put(key)
+                    self.key_pressed.set()
+
+        def getkey_nonblock(self):
+            """
+            Reads a single keypress from keyboard but does not block
+            @return: None if no key was pressed, otherwise returns the key pressed
+            """
+            if self.key_pressed:
+                if self.key_pressed.is_set():
+                    key = self.keybuffer.get()
+                    self.key_pressed.clear()
+                    return key
+                else:
+                    return None
+
+        def getkey_block(self):
+            """
+            Blocks and waits for a single keypress
+            @return: the key pressed
+            """
+            self.key_pressed.wait()
+            key = self.keybuffer.get()
+            self.key_pressed.clear()
+            return key
+
+
+    keybuffer = AsyncKeyboardInputBuffer()
+
+    processing_thread = threading.Thread(target=process_trajectory, args=(buffer,))
+    processing_thread.start()
+
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        main(args, keybuffer)
+

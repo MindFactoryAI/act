@@ -61,12 +61,12 @@ class ACTPrimitive(Primitive):
 
 
 class CapturePrimitive(Primitive):
-    def __init__(self, task_name):
+    def __init__(self, task_name, keybuffer):
         super().__init__()
         self.task_name = task_name
         self.task = TASK_CONFIGS[task_name]
         self.initial_policy = LerpJointPosPolicy(task_name)
-        self.execute_policy = CapturePolicy(task_name)
+        self.execute_policy = CapturePolicy(task_name, keybuffer)
         self.dataset_dir = TASK_CONFIGS[task_name]['dataset_dir']
 
     @property
@@ -200,18 +200,19 @@ class ACTPolicy:
 
 
 class CapturePolicy:
-    def __init__(self, task_name):
+    def __init__(self, task_name, keybuffer):
 
         self.task_name = task_name
         self.task = TASK_CONFIGS[task_name]
         self.episode_len = self.task['episode_len']
         self.dataset_dir = self.task['dataset_dir']
+        self.keybuffer = keybuffer
 
     def __call__(self, env, initial_state, master_bot_left, master_bot_right, open_grippers_after=False):
-        wait_for_input(env, master_bot_left, master_bot_right)
+        wait_for_input(env, master_bot_left, master_bot_right, self.keybuffer, block_until='keyboard', message='press any key to start')
 
         states, actions, timings = \
-            teleoperate([initial_state], [], [], self.episode_len, env, master_bot_left, master_bot_right)
+            teleoperate([initial_state], [], [], self.episode_len, env, master_bot_left, master_bot_right, self.keybuffer)
         terminal_state = states[-1]
         states = states[:-1]
 
