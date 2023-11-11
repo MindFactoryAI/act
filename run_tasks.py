@@ -194,6 +194,11 @@ def main(args, keybuffer):
                 def get_digit(handle_state):
                     return int(handle_state[0])
 
+
+                # check all cameraas are reporting
+                for cam in states[0].observation['images'].keys():
+                    assert states[0].observation['images'][cam] is not None, f"FAIL: {cam} is not reporting data, reboot the system"
+
                 if RIGHT_HANDLE_OPEN(handle_state) or handle_state[0] == '\n' or is_positive_digit(handle_state):
                     print("Saving PASS")
                     episode_idx = get_auto_index(policy.dataset_dir)
@@ -202,7 +207,7 @@ def main(args, keybuffer):
                     print(dataset_name + '\n')
                     rating = get_digit(handle_state) if is_positive_digit(handle_state) else 10
 
-                    if len(actions) == policy.task['episode_len']:
+                    if len(actions) <= policy.task['episode_len']:
 
                         buffer_args = episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions, terminal_state
                         buffer_kwargs = {'rating': rating }
@@ -232,16 +237,17 @@ def main(args, keybuffer):
                     episode_idx = get_auto_index(dataset_fail_dir)
                     dataset_name = f'episode_{episode_idx}'
                     episode_path = validate_dataset(dataset_fail_dir, dataset_name, overwrite=False)
-                    if len(actions) == policy.task['episode_len']:
+                    if len(actions) <= policy.task['episode_len']:
                         # pdb.set_trace()
                         buffer_args = episode_path, checkpoint_info.guid, policy.task['camera_names'], policy.task['episode_len'], states, actions, terminal_state
                         buffer_kwargs = {'rating': 0}
+
                         buffer.put((buffer_args, buffer_kwargs))
 
                         # save_episode(*buffer_args, **buffer_kwargs)
                         update_panel(i, states[0].observation['images']['cam_low'])
                     else:
-                        print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected {policy.task['episode_len']}")
+                        print(f"SKIPPING SAVE as the episode len is {len(actions)} but expected max of {policy.task['episode_len']}")
 
                     # record the result
                     checkpoint_info.trials.append(0)
