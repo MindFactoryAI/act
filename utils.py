@@ -146,10 +146,9 @@ class EpisodicDataset(torch.utils.data.Dataset):
         return image_data, qpos_data, action_data, is_pad
 
 
-
 class CompressedEpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, samples_per_epoch=1,
-                 mixup=False, cutout_prob=0., cutout_patch_size=250, qpos_noise=1.0, discount=0.99):
+    def __init__(self, prediciton_len, episode_ids, dataset_dir, camera_names, norm_stats, samples_per_epoch=1,
+                 mixup=False, cutout_prob=0., cutout_patch_size=250, qpos_noise=1.0, discount=0.99, sample_full_episode=False):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
@@ -162,6 +161,8 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
         self.cutout_patch_size = cutout_patch_size
         self.qpos_noise = qpos_noise
         self.discount = discount
+        self.prediction_len = prediciton_len
+        self.sample_full_episode = sample_full_episode  # used for unit testing purposes
         self.__getitem__(0) # initialize self.is_sim
 
     def __len__(self):
@@ -170,15 +171,13 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         index = index % len(self.episode_ids)
 
-        sample_full_episode = False # hardcode
-
         episode_id = self.episode_ids[index]
         dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
 
         with h5py.File(dataset_path, 'r') as episode:
             original_action_shape = episode['/action'].shape
             episode_len = original_action_shape[0]
-            if sample_full_episode:
+            if self.sample_full_episode:
                 start_ts = 0
             else:
                 start_ts = np.random.choice(episode_len)
@@ -206,9 +205,10 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
 
 
         # self.is_sim = is_sim
-        padded_action = np.zeros(original_action_shape, dtype=np.float32)
+        padded_action = np.zeros((self.prediction_len, original_action_shape[1]), dtype=np.float32)
+        action_len = min(action_len, self.prediction_len)
         padded_action[:action_len] = action
-        is_pad = np.zeros(episode_len)
+        is_pad = np.zeros(self.prediction_len)
         is_pad[action_len:] = 1
 
 
@@ -225,7 +225,6 @@ class CompressedEpisodicDataset(torch.utils.data.Dataset):
         image_data = image_data / 255.0
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
-
 
         if self.qpos_noise != 0.:
             # qpos_data = np.random.normal(qpos_data, self.qpos_noise)
